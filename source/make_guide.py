@@ -17,10 +17,10 @@ DATA = r'''
 安装与第一次使用|需要安装 CUDA 吗？|默认 CPU 模式不需要。确有 NVIDIA 显卡时，可以勾选安装器的可选加速项，或在软件设置里点“启用显卡加速”；程序准备自己的运行组件，不要求手动安装整套 CUDA 开发工具。
 安装与第一次使用|安装时会改动电脑上已有的 Python 吗？|本懒人包使用独立运行目录，不依赖或更换现有 Python，也不添加系统 PATH。若识别组件缺少 Windows VC++ 运行库，可能调用微软安装器补齐该系统运行库。
 安装与第一次使用|支持什么电脑？Mac、手机能用吗？|本包面向 Windows 10/11、64 位 Intel 或 AMD 电脑。不是 macOS、安卓、iPhone 安装包；32 位 Windows 和 Windows ARM 电脑不属于本版支持范围。电脑“设置 → 系统 → 系统信息/关于”可查看系统类型。
-安装与第一次使用|应该选择哪种安装内容？|第一次选 small 完整版。Turbo 文件和资源需求更大，适合明确需要它、且电脑资源充足时选择。已有 SRT、只想翻译或校对，可选仅 SRT 模式；以后再补装识别组件。
+安装与第一次使用|应该选择哪种安装内容？|第一次选 small 完整版。tiny 最小、下载与占用最低，适合老电脑，准确度略低；Turbo 文件和资源需求更大，适合明确需要它、且电脑资源充足时选择。已有 SRT、只想翻译或校对，可选仅 SRT 模式；以后再补装识别组件。
 安装与第一次使用|文件这么小，是不是没装完整？|小包是完整的自动安装入口，包含软件程序与说明。运行环境和模型在第一次安装时从原发布站点下载，所以本包不是所有大组件都塞在里面的离线整合包。
-安装与第一次使用|第一次到底要下载多少？|small 推荐模式约 0.61 GB；Turbo 模式约 1.75 GB；仅 SRT 模式约 35 MB。可选 NVIDIA 加速另约 570 MB，缺少 VC++ 运行库时还可能补下约 26 MB。均为本版清单估算，重试流量另计。
-安装与第一次使用|电脑要留多少空间？|安装器对 small 要求约 3 GB 空闲，对 Turbo 要求约 7 GB，对仅 SRT 要求约 0.5 GB；解压、缓存和运行文件都会占空间。视频及导出文件另外占空间，输出目录可选 D 盘。
+安装与第一次使用|第一次到底要下载多少？|small 推荐模式约 0.61 GB；Turbo 模式约 1.75 GB；tiny 模式约 0.2 GB；仅 SRT 模式约 35 MB。可选 NVIDIA 加速另约 570 MB，缺少 VC++ 运行库时还可能补下约 26 MB。均为本版清单估算，重试流量另计。
+安装与第一次使用|电脑要留多少空间？|安装器对 small 要求约 3 GB 空闲，对 Turbo 要求约 7 GB，对 tiny 要求约 1.5 GB，对仅 SRT 要求约 0.5 GB；解压、缓存和运行文件都会占空间。视频及导出文件另外占空间，输出目录可选 D 盘。
 安装与第一次使用|能改成安装在 D 盘吗？|本版安装器固定放在当前用户的数据目录，尚未提供安装盘选择。可把视频和输出目录放 D 盘；C 盘实在不足时先选仅 SRT 模式。不要直接搬动已经安装的 Python 目录。
 安装与第一次使用|需要管理员权限吗？|主体安装放在当前用户目录，通常不用。只有缺少微软 VC++ 运行库时可能出现 Windows 权限确认；应核对该运行库安装器的发布者是 Microsoft。不要在不知道用途时随意给其他安装器提权。
 安装与第一次使用|出现“未知发布者”或 SmartScreen 怎么办？|本自制启动器没有商业代码签名，可能出现信誉提示。先核对文件来自这次交付、文件名和包内校验清单，再决定是否运行。若明确报告病毒/木马，先停止并保留截图；不要关闭杀毒、关闭防火墙或添加整盘排除项来强行安装。
@@ -35,6 +35,8 @@ DATA = r'''
 下载、联网与续传|提示“续传范围错误”？|服务器或中间代理返回的数据与续传位置不匹配，程序会停止拼接以免生成坏文件。先换网络并重试；仍失败时导出安装诊断，保留缓存，避免盲目清空全部大文件。
 下载、联网与续传|证书验证失败、SSL、TLS 报错？|检查电脑日期、时间和时区是否明显不对，先完成正常系统更新。学校或公司网络有证书代理时请咨询管理员，或用其他正常网络测试。不要关闭证书校验，也不要安装来历不明的根证书。
 下载、联网与续传|Hugging Face 模型下不下来？|在其他正常可用网络下重试；模型较大，先用 small。若朋友已经有完整 faster-whisper 模型，可先选仅 SRT 模式安装程序，再补装识别组件并在设置中指定模型目录；本安装器的完整模式仍会准备所选模型，不会自动识别任意外部目录。
+下载、联网与续传|tiny 模型从哪里下载？|tiny 模型文件托管在魔搭 ModelScope（国内可直接访问），small 与 Turbo 来自 Hugging Face 官方仓库并支持国内镜像。所有模型文件都按清单逐文件校验 SHA-256，来源不同不影响文件安全。
+下载、联网与续传|“国内镜像”是什么，要不要勾？|默认勾选即可。huggingface.co 在国内可能连不上或很慢；勾选后模型文件下载失败会自动改用 hf-mirror.com 镜像重试，SHA-256 逐文件校验不变，文件安全不受影响。该选项只对 Hugging Face 模型地址生效；Python 运行包和识别组件仍从官方站点下载。
 下载、联网与续传|能用朋友已经下载的模型吗？|在“翻译与识别设置 → 本地模型文件夹”选择完整目录，里面至少应有 model.bin、config.json、tokenizer.json，以及该模型配套词表。不要只拷一个 model.bin，也不要选 .pt 或原始 PyTorch 模型。电脑仍须先安装语音识别组件。
 下载、联网与续传|切换网络或开关代理后还是报错？|停止任务，关闭并重新打开程序后再试，让进程重新读取网络配置。若系统代理指向已经关闭的软件，先恢复正确的系统代理设置；不要随意改 API 域名或使用别人给的中转密钥。
 下载、联网与续传|安装完了，可以把安装缓存删掉吗？|关闭安装器和字幕工坊后，%LOCALAPPDATA%\SubtitleStudio\Easy\cache 是下载/安装缓存，可以删除以腾空间，但将来修复可能重新下载。不要删除 models、settings.json 或你的项目输出目录；已有 GPU 缓存是另一处目录，别混着清理。
@@ -53,7 +55,8 @@ DATA = r'''
 账号、密钥与费用|API 密钥是什么？安装时必须填吗？|它是让软件调用你自己的 DeepSeek API 账户的凭据。安装、识别、已有 SRT 校对和打轴不需要；只有准备让软件自动翻译缺少的中文时才填写。
 账号、密钥与费用|去哪里取得密钥？|打开 https://platform.deepseek.com/，登录自己的账户，在平台的 API Keys/密钥管理处创建密钥并复制。网站界面可能变化，以官方平台为准；不要用来路不明的“共享 key”。
 账号、密钥与费用|把密钥填到哪里？|打开字幕工坊，点击“翻译与识别设置”，把密钥粘贴到“API 密钥”。默认翻译模型保留 deepseek-flash，回到“任务与字幕”点“识别并翻译 / 继续”。输入框用圆点隐藏内容是正常现象。
-账号、密钥与费用|为什么重开软件后密钥没了？|本版不把密钥写入设置、项目或导出文件，只在当前运行期间使用。所以每次重新打开后需要再次粘贴。不要为了省事把真实密钥写进转发给朋友的安装包或说明书。
+账号、密钥与费用|为什么重开软件后密钥没了？|默认只在当前运行期间使用，不写入设置、项目或导出文件，所以重开后需要重新粘贴。需要省事时可在设置页勾选“记住密钥”：密钥会用 Windows 账户级加密保存在本机，仅当前 Windows 用户在本机才能解开。不要为了省事把真实密钥写进转发给朋友的安装包或说明书。
+账号、密钥与费用|“记住密钥”安全吗？|勾选后密钥经 Windows DPAPI 按当前用户加密后存放在本机用户目录，其他系统用户、其他电脑和诊断包都无法直接读取；程序与项目文件里不保存明文密钥。换电脑、换系统用户或重装系统后需要重新粘贴。不想保留时取消勾选即可清除已存密钥。
 账号、密钥与费用|DeepSeek 网页能免费聊天，软件翻译也免费吗？|这是通过 DeepSeek API 调用翻译，计费与网页版聊天不是同一回事。以朋友自己的 API 平台余额和账单为准。本地识别、手动校对和导出本身不产生 DeepSeek API 调用。
 账号、密钥与费用|我有 ChatGPT 会员，能用来抵扣吗？|不能把 ChatGPT 会员当作这个软件的 DeepSeek API 密钥或余额。此版本固定调用 DeepSeek 官方接口；要翻译，使用对应平台自己的 API 凭据。
 账号、密钥与费用|HTTP 401 怎么处理？|密钥认证失败。重新复制完整密钥，去掉首尾多余空格，确认没有把密码、模型名或其他平台的 key 填进去。必要时在官方平台撤销旧密钥并创建新密钥。
@@ -64,6 +67,7 @@ DATA = r'''
 账号、密钥与费用|怎样避免重复烧 token？|优先“打开项目 / SRT…”载入以前的 project.json 或对应原文/中文 SRT。普通继续只补译中文为空的条目；不要勾“重新翻译全部”。只调时间、手改文字、导出文件都不会调用翻译 API。
 账号、密钥与费用|改了原文，为什么中文没自动重译？|这是为了保留你已经做过的译文。若确实要重译该条，清空这条的中文并保存，再点“识别并翻译 / 继续”；其他已有译文保持不变。
 账号、密钥与费用|人名、术语翻得不统一怎么办？|先在“人名 / 术语说明”写统一对应关系，再翻译缺失条目。已经有中文的条目不会因为改术语而自动重新收费翻译；可手改，或只清空确实要重译的几条。
+识别视频与模型|可以一次处理多个视频吗？|可以。点击任务页的“添加多个文件…”把视频或 SRT 加入队列，再点“识别并翻译 / 继续”或“仅识别原文”。队列会依次处理每个文件，单个失败会自动跳过并继续，完成后统一提示。翻译模式下费用预估写入日志而不弹窗；点“停止”会中止整个队列。
 识别视频与模型|第一次该拿什么视频试？|选一个自己能正常播放、有人清楚说话、约 30 秒至 1 分钟的本地视频，先点“仅识别原文”。这样能快速确认声音、模型和输出位置，再处理长片。
 识别视频与模型|视频链接能直接粘进去吗？|不能，本工具处理电脑上的视频、音频或 SRT。先用合适方式把视频保存到本机，再点“选择文件”；这份安装包不包含 B 站或油管下载器。
 识别视频与模型|哪些语言比较适合？|界面重点提供英语、日语和自动识别，目标译文是简体中文。知道源语言时优先手动选对。模型还可能识别其他语言，但本包没有逐一验证所有语言的效果。
@@ -138,6 +142,7 @@ QUICK = '''字幕工坊 1.6 懒人完整安装包
 3. 保留第一项 small 推荐设置，点“一键安装 / 修复”。
 4. 首次需联网下载约 0.61 GB；请预留约 3 GB 空间，等到“安装完成”。
 5. 软件自动打开。以后双击桌面上的“字幕工坊”。
+下载失败或很慢：安装器里的“国内镜像”默认勾选，请保持勾选。
 
 第一次测试：
 1. 选一段 30 秒至 1 分钟、有人清楚说话的本地视频。
@@ -168,9 +173,9 @@ PAGE = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="vi
 </style><main><header><div class="eyebrow">SUBTITLE STUDIO · 1.6 · WINDOWS</div><h1>不用配环境，先做出第一份字幕。</h1><p class="lead">这份指南按第一次接触软件来写。先走完下面三步；出问题时直接搜索你看到的提示，不必从头读完全部说明。</p><span class="tag">完整安装入口</span><span class="tag">CPU 默认可用</span><span class="tag">保留已有字幕与译文</span><p><a href="#first">开始使用</a>　<a href="#money">密钥与费用</a>　<a href="#faq">__COUNT__ 个常见问题</a>　<a href="#support">怎么找售后</a></p></header>
 <div class="note"><b>先知道三件事：</b>这是 Windows 10/11 x64 软件；第一次安装需要联网下载大组件；自动翻译需要朋友自己的 DeepSeek API 密钥与额度，安装包没有附送账号。</div>
 <h2 id="first">第一次使用，照着做</h2><div class="steps"><section class="step"><b class="num">1</b><h3>解压并打开安装器</h3><div class="mock"><div class="mock-title">解压后的文件夹</div><div class="mock-body">📄 字幕工坊_安装与启动.exe<br>📄 先读我_快速开始.txt<br>📄 小白指南.html</div></div><p>右键 ZIP → 全部解压缩。双击第一个 EXE；不要点 source、payload 或 app.py。</p></section><section class="step"><b class="num">2</b><h3>保持推荐，点一次安装</h3><div class="mock"><div class="mock-title">字幕工坊 · 一键准备</div><div class="mock-body"><div class="mock-row">推荐：完整安装 + small</div><span class="mock-btn">一键安装 / 修复</span></div></div><p>首次约 0.61 GB，预留约 3 GB 空间。等“安装完成”，软件会自动打开。普通电脑先不勾 GPU。</p></section><section class="step"><b class="num">3</b><h3>先用短片验证识别</h3><div class="mock"><div class="mock-title">任务与字幕</div><div class="mock-body"><div class="mock-row">视频 / 字幕　选择文件</div><span class="mock-btn">仅识别原文</span><span class="mock-btn light">打开输出文件夹</span></div></div><p>选 30 秒至 1 分钟的人声短片。选对原语言，先只识别原文；确认正常后再翻译。</p></section></div><p class="caption">以上为操作位置示意，用于对应真实按钮名称，并非 Windows 实机截图。</p>
-<section class="card" id="money"><h3>需要翻译时，再填密钥</h3><div class="mock"><div class="mock-title">翻译与识别设置</div><div class="mock-body"><div class="mock-row">API 密钥　●●●●●●●●●●</div><div class="mock-row">翻译模型　deepseek-flash</div><p class="arrow">填好自己的密钥 → 回“任务与字幕” → 点“识别并翻译 / 继续”</p></div></div><p>密钥在 <a href="https://platform.deepseek.com/" target="_blank" rel="noreferrer">DeepSeek 官方开放平台</a>取得。安装器不会替你登录、充值或自动发起付费翻译。本地识别、校对、打轴和导出不调用翻译 API。</p><p class="muted">当前版不保存密钥到磁盘，重开后需再粘贴。不要把自己的密钥发给朋友或塞进安装包。API 价格以官方平台为准，不在本指南承诺固定费用。</p></section>
+<section class="card" id="money"><h3>需要翻译时，再填密钥</h3><div class="mock"><div class="mock-title">翻译与识别设置</div><div class="mock-body"><div class="mock-row">API 密钥　●●●●●●●●●●</div><div class="mock-row">翻译模型　deepseek-flash</div><p class="arrow">填好自己的密钥 → 回“任务与字幕” → 点“识别并翻译 / 继续”</p></div></div><p>密钥在 <a href="https://platform.deepseek.com/" target="_blank" rel="noreferrer">DeepSeek 官方开放平台</a>取得。安装器不会替你登录、充值或自动发起付费翻译。本地识别、校对、打轴和导出不调用翻译 API。</p><p class="muted">默认不保存密钥，重开后需再粘贴；需要时可在设置页勾选“记住密钥”，用 Windows 账户级加密保存在本机。不要把自己的密钥发给朋友或塞进安装包。API 价格以官方平台为准，不在本指南承诺固定费用。</p></section>
 <section class="card"><h3>已有字幕？走这条更省事</h3><p><b>打开项目 / SRT… <span class="arrow">→</span> 选择字幕类型并看预览 <span class="arrow">→</span> 导入校对 <span class="arrow">→</span> 只补译缺少的中文</b></p><p>不要重新识别已有字幕。已翻译部分会保留；“重新翻译全部”只有在你明确要重做时才勾选。时长统一修改用 F4，可以选择当前一条或全部字幕。</p></section>
-<h2>三种安装内容怎么选</h2><div class="card"><table><thead><tr><th>选择</th><th>首次基础下载</th><th>适合谁</th></tr></thead><tbody><tr><td><b>small 推荐版</b></td><td>约 0.61 GB</td><td>第一次使用、普通电脑、先把视频识别和翻译跑通</td></tr><tr><td>Turbo 版</td><td>约 1.75 GB</td><td>明确需要更大模型，能接受下载和资源开销</td></tr><tr><td>仅 SRT 版</td><td>约 35 MB</td><td>手头已有字幕，先翻译、校对、加字幕或打轴</td></tr></tbody></table><p class="muted">NVIDIA 加速另约 570 MB；需要时可能补约 26 MB 的微软 VC++ 运行库。下载量不包含视频素材。朋友的电脑配置未知，Turbo 不保证比 small 更适合。</p></div>
+<h2>四种安装内容怎么选</h2><div class="card"><table><thead><tr><th>选择</th><th>首次基础下载</th><th>适合谁</th></tr></thead><tbody><tr><td><b>small 推荐版</b></td><td>约 0.61 GB</td><td>第一次使用、普通电脑、先把视频识别和翻译跑通</td></tr><tr><td><b>tiny 轻量版</b></td><td>约 0.2 GB</td><td>老电脑、磁盘紧张；准确度略低于 small</td></tr><tr><td>Turbo 版</td><td>约 1.75 GB</td><td>明确需要更大模型，能接受下载和资源开销</td></tr><tr><td>仅 SRT 版</td><td>约 35 MB</td><td>手头已有字幕，先翻译、校对、加字幕或打轴</td></tr></tbody></table><p class="muted">NVIDIA 加速另约 570 MB；需要时可能补约 26 MB 的微软 VC++ 运行库。下载量不包含视频素材。朋友的电脑配置未知，Turbo 不保证比 small 更适合。</p></div>
 <h2>导出后找哪一个文件</h2><div class="card"><table><thead><tr><th>你想做什么</th><th>使用什么</th></tr></thead><tbody><tr><td>在 PR 中同步显示原语言字幕</td><td>原文 .srt</td></tr><tr><td>只显示中文</td><td>中文 .srt</td></tr><tr><td>原文在上、中文在下</td><td>混合 .srt</td></tr><tr><td>读稿、复制文字、审阅</td><td>对应 .txt</td></tr><tr><td>下次继续校对或翻译，避免重复工作</td><td>项目目录里的 project.json</td></tr></tbody></table><p>点击“打开输出文件夹”，在 exports 中选择最新时间的文件夹。修改项目后要重新导出，旧 SRT 不会自动更新。</p></div>
 <h2 id="faq">__COUNT__ 个常见问题：直接搜报错</h2><div class="search"><input id="search" type="search" placeholder="例如：401、模型、DLL、乱码、显卡、重复翻译" aria-label="搜索问题"><select id="category" aria-label="问题分类"><option value="">全部分类</option>__OPTIONS__</select><button id="expand">展开当前问题</button><button id="collapse">收起</button></div><p id="count" class="muted" aria-live="polite"></p><div id="questions">__FAQ__</div><p id="empty" class="note" hidden>没有找到对应条目。换一个更短的关键词，或按下面的方法发诊断。</p>
 <section class="card" id="support"><h3>还是不行？照这个模板发来</h3><p>① 版本：1.6.0；② 最后点了什么按钮；③ 看到的完整提示截图；④ 选 small 还是 Turbo、CPU 还是 GPU；⑤ 素材大约多长；⑥ 对应诊断 ZIP。</p><p><b>安装/启动失败：</b>安装器 → 导出安装诊断。<br><b>主程序处理失败：</b>诊断与资源 → 导出诊断包。</p><p class="note">截图里如果有展开的密钥，先遮住。不要发送 cookies、API 密钥、账号密码，也不用先上传整段私人视频。不要用你的旧日志代替朋友电脑刚导出的日志。</p></section>

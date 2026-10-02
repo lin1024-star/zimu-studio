@@ -437,6 +437,22 @@ def cues_from_segments(segments, language, stop=None, progress=None):
     return cues
 
 
+# 识别参数：针对带背景音乐的日语/中文素材与 4 GB 显卡环境调优。
+# 相比 faster-whisper 默认值，放宽了丢弃语音的阈值（VAD 更敏感、低置信度片段保留），
+# 减少“有些话没有识别出来”的漏识别；仍保持逐词时间轴与 beam=5 精度。
+ASR_OPTIONS = {
+    "beam_size": 5,
+    "word_timestamps": True,
+    "vad_filter": True,
+    "vad_parameters": {"threshold": 0.3, "min_speech_duration_ms": 60,
+                       "min_silence_duration_ms": 300, "speech_pad_ms": 600},
+    "no_speech_threshold": 0.3,
+    "log_prob_threshold": -1.5,
+    "compression_ratio_threshold": 4.0,
+    "condition_on_previous_text": False,
+}
+
+
 def _transcribe_once(path, model_name, language, device, model_dir, stop, emit):
     import gc
     try:
@@ -468,16 +484,16 @@ def _transcribe_once(path, model_name, language, device, model_dir, stop, emit):
         engine = getattr(model, "model", None)
         emit("diagnostic", {"event": "model_loaded", "actual_device": getattr(engine, "device", device),
                             "compute_type": getattr(engine, "compute_type", compute),
-                            "cpu_threads": max(1, min(8, os.cpu_count() or 4)), "beam_size": 5,
-                            "word_timestamps": True, "vad_filter": True})
+                            "cpu_threads": max(1, min(8, os.cpu_count() or 4)), "beam_size": ASR_OPTIONS["beam_size"],
+                            "word_timestamps": True, "vad_filter": True,
+                            "vad_threshold": ASR_OPTIONS["vad_parameters"]["threshold"],
+                            "log_prob_threshold": ASR_OPTIONS["log_prob_threshold"]})
         emit("log", "已启用 NVIDIA 显卡，使用 4 GB 省显存模式。" if device == "cuda" else "正在使用 CPU 识别。")
         check_cancel(stop)
         emit("phase", "audio_preprocessing")
         emit("status", "正在处理音频：解码、人声检测与特征计算；此阶段仍会使用 CPU 和系统内存。")
         # Sequential audio windows, no BatchedInferencePipeline. Preserve beam=5 and word timestamps.
-        segments, info = model.transcribe(str(path), language=language or None, task="transcribe", beam_size=5,
-                                          word_timestamps=True, vad_filter=True,
-                                          vad_parameters={"min_silence_duration_ms": 500}, condition_on_previous_text=False)
+        segments, info = model.transcribe(str(path), language=language or None, task="transcribe", **ASR_OPTIONS)
         emit("diagnostic", {"event": "media_info", "audio_duration_seconds": info.duration})
         emit("phase", "inference")
         emit("log", f"识别语言：{LANGUAGES.get(info.language, info.language)}；音频长度约 {info.duration / 60:.1f} 分钟。")
@@ -494,7 +510,7 @@ def _transcribe_once(path, model_name, language, device, model_dir, stop, emit):
 
 def prepared_model_path(model_name, model_dir):
     """Only known aliases may resolve to the installer's verified local models."""
-    if model_name not in {"small", "turbo"}:
+    if model_name not in {"small", "turbo", "tiny"}:
         return model_name
     candidate = Path(model_dir) / "prepared" / model_name
     if all((candidate / name).is_file() for name in ("model.bin", "config.json", "tokenizer.json", "ready.json")):
@@ -710,6 +726,37 @@ def translate_project(path, project, key, model, glossary, stop, emit, force=Fal
         emit("project", str(path))
         emit("log", f"已保存中文：{count}/{len(cues)} 条。")
     emit("log", f"本轮 API 用量：输入 {client.input_tokens} tokens，输出 {client.output_tokens} tokens。费用以 DeepSeek 账单为准。")
+
+
+# 估算价格（人民币，元/百万 token）。官方价格可能调整，最终以 DeepSeek 账单为准。
+PRICE_CNY = {
+    "deepseek-flash": (0.5, 2.0),
+    "deepseek-chat": (2.0, 8.0),
+    "deepseek-reasoner": (4.0, 16.0),
+}
+
+
+def _cue_field(cue, field):
+    return cue.get(field, "") if isinstance(cue, dict) else getattr(cue, field, "")
+
+
+def estimate_tokens(text):
+    zh = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
+    jp = sum(1 for ch in text if "\u3040" <= ch <= "\u30ff")
+    other = max(0, len(text) - zh - jp)
+    return int(zh * 1.5 + jp * 1.2 + other * 0.3 + 1)
+
+
+def estimate_cost(cues, model, force=False):
+    """返回 (待译条数, 预估输入 tokens, 预估输出 tokens, 预估人民币元)。纯本地估算，不发起任何请求。"""
+    pending = [c for c in cues if force or not clean(_cue_field(c, "zh"))]
+    src_tokens = sum(estimate_tokens(clean(_cue_field(c, "source"))) for c in pending)
+    overhead = len(pending) * 40 + 300  # 每批提示词与上下文开销
+    input_tokens = src_tokens + overhead
+    output_tokens = int(src_tokens * 1.2)
+    price_in, price_out = PRICE_CNY.get(model, PRICE_CNY["deepseek-chat"])
+    cost = input_tokens / 1_000_000 * price_in + output_tokens / 1_000_000 * price_out
+    return len(pending), input_tokens, output_tokens, cost
 
 
 def run_job(config, stop, emit):

@@ -1,0 +1,14 @@
+[tool.ruff]
+line-length = 130
+target-version = "py313"
+exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+files = ["payload"]
+check_untyped_defs = false

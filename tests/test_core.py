@@ -119,13 +119,40 @@ class CoreTests(unittest.TestCase):
 
     def test_import_srt_preserves_milliseconds_and_markup_text(self):
         p = self.root / "日语.srt"
-        p.write_text("8\r\n00:00:01,250 --> 00:00:03,499\r\n<i>こんにちは。</i>\r\n\r\n12\r\n01:02:03.999 --> 01:02:05.100\r\nテストです。\r\n", encoding="utf-8-sig")
+        p.write_text("8\r\n00:00:01,250 --> 00:00:03,499\r\n<i>こんにちは。</i>\r\n\r\n12\r\n01:02:03.999 --> 01:02:05.100\r\nテストです。\r\n", encoding="utf-8-sig", newline="")
         cues = read_srt(p)
         self.assertEqual([c.id for c in cues], [1, 2])
         self.assertEqual(cues[0].start, 1.25)
         self.assertEqual(cues[1].end, 3725.1)
         self.assertEqual(cues[0].source, "こんにちは。")
         self.assertIn("01:02:03,999", format_srt(cues, language="ja"))
+
+    def test_asr_options_keep_quiet_and_low_confidence_speech(self):
+        from core import ASR_OPTIONS
+        # 针对带背景音乐的素材放宽丢弃阈值，减少漏识别。
+        self.assertEqual(ASR_OPTIONS["beam_size"], 5)
+        self.assertTrue(ASR_OPTIONS["word_timestamps"])
+        self.assertTrue(ASR_OPTIONS["vad_filter"])
+        self.assertLessEqual(ASR_OPTIONS["vad_parameters"]["threshold"], 0.35)
+        self.assertGreaterEqual(ASR_OPTIONS["vad_parameters"]["speech_pad_ms"], 500)
+        self.assertLessEqual(ASR_OPTIONS["no_speech_threshold"], 0.35)
+        self.assertLessEqual(ASR_OPTIONS["log_prob_threshold"], -1.2)
+        self.assertGreaterEqual(ASR_OPTIONS["compression_ratio_threshold"], 3.5)
+        self.assertFalse(ASR_OPTIONS["condition_on_previous_text"])
+
+    def test_estimate_cost_counts_only_pending_cues(self):
+        from core import estimate_cost
+        cues = [asdict(Cue(1, 0.0, 1.0, "こんにちは世界")), asdict(Cue(2, 1.0, 2.0, "hello world"))]
+        cues[0]["zh"] = "已经翻译"
+        n, tin, tout, cost = estimate_cost(cues, "deepseek-flash", force=False)
+        self.assertEqual(n, 1)
+        self.assertGreater(tin, 0)
+        self.assertGreater(tout, 0)
+        self.assertGreater(cost, 0)
+        n2, tin2, tout2, cost2 = estimate_cost(cues, "deepseek-flash", force=True)
+        self.assertEqual(n2, 2)
+        self.assertGreater(tin2, tin)
+        self.assertGreater(cost2, cost)
 
     def test_broken_srt_is_rejected_instead_of_dropping_cues(self):
         p = self.root / "bad.srt"

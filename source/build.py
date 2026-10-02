@@ -17,7 +17,7 @@ compiler = a.compiler or shutil.which('csc')
 if not compiler:
     parser.error('Specify --compiler for the C# compiler.')
 refs = Path(a.refs)
-assemblies = ['mscorlib', 'System', 'System.Core', 'System.Drawing', 'System.Windows.Forms', 'System.IO.Compression', 'System.IO.Compression.FileSystem']
+assemblies = ['mscorlib', 'System', 'System.Core', 'System.Drawing', 'System.Windows.Forms', 'System.Management', 'System.IO.Compression', 'System.IO.Compression.FileSystem']
 for name in assemblies:
     if not (refs / (name + '.dll')).is_file():
         parser.error('Missing official reference assembly: ' + name)
@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory(prefix='subtitle-build-') as td:
         for p in sorted((ROOT / 'payload').rglob('*')):
             if p.is_file() and '__pycache__' not in p.parts and p.suffix != '.pyc':
                 z.write(p, p.relative_to(ROOT / 'payload').as_posix())
-    command = ([a.mono] if a.mono else []) + [compiler, '-noconfig', '-nostdlib', '-platform:x64', '-codepage:utf8', '-optimize+', '-target:winexe', '-win32manifest:' + str(ROOT / 'source/app.manifest'), '-resource:' + str(bundle) + ',payload.zip', '-resource:' + str(ROOT / 'source/manifest.json') + ',manifest.json', '-out:' + a.out]
+    command = ([a.mono] if a.mono else []) + [compiler, '-noconfig', '-nostdlib', '-platform:x64', '-codepage:65001', '-optimize+', '-target:winexe', '-win32manifest:' + str(ROOT / 'source/app.manifest'), '-resource:' + str(bundle) + ',payload.zip', '-resource:' + str(ROOT / 'source/manifest.json') + ',manifest.json', '-out:' + a.out]
     command += ['-r:' + str(refs / (name + '.dll')) for name in assemblies]
     command += [str(ROOT / 'source' / name) for name in ['AssemblyInfo.cs', 'Json.cs', 'InstallerCore.cs', 'Launcher.cs']]
     subprocess.run(command, check=True)

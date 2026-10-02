@@ -40,30 +40,61 @@ namespace SubtitleEasy {
             var registration=token.Register(request.Abort);
             try{var response=(HttpWebResponse)request.GetResponse();if(response.ResponseUri.Scheme!="https"){response.Dispose();throw new IOException("下载地址没有提供 HTTPS。");}return new Reply{Body=response.GetResponseStream(),Status=(int)response.StatusCode,Range=response.Headers["Content-Range"]??"",Response=response,Registration=registration};}catch{registration.Dispose();token.ThrowIfCancellationRequested();throw;}
         }
+        internal static string Mirrored(string url){
+            const string hf="https://huggingface.co/";
+            if(!url.StartsWith(hf,StringComparison.Ordinal))return null;
+            return "https://hf-mirror.com/"+url.Substring(hf.Length);
+        }
         public static void Fetch(Spec spec,string destination,CancellationToken token,IProgress<Update> progress,Func<string,long,CancellationToken,Reply> open=null){
+            Fetch(spec,destination,token,false,progress,open);
+        }
+        public static void Fetch(Spec spec,string destination,CancellationToken token,bool mirror,IProgress<Update> progress,Func<string,long,CancellationToken,Reply> open=null){
             if(spec.Size<=0||spec.Size>6L*1024*1024*1024||!Regex.IsMatch(spec.Sha??"",@"^[a-f0-9]{64}$")||!spec.Url.StartsWith("https://",StringComparison.Ordinal))throw new IOException("下载清单无效。");
             Directory.CreateDirectory(Path.GetDirectoryName(destination));token.ThrowIfCancellationRequested();
             if(File.Exists(destination)&&new FileInfo(destination).Length==spec.Size){progress.Report(new Update("校验已有文件："+spec.Name));if(Hash(destination)==spec.Sha)return;}
-            string part=destination+".part";Exception last=null;
+            string part=destination+".part";string alt=mirror?Mirrored(spec.Url):null;Exception last=null;
+            string[] urls=alt==null?new[]{spec.Url}:new[]{spec.Url,alt};
             for(int attempt=0;attempt<3;attempt++){
-                token.ThrowIfCancellationRequested();if(File.Exists(part)&&new FileInfo(part).Length>spec.Size)File.Delete(part);long offset=File.Exists(part)?new FileInfo(part).Length:0;
-                try{
-                    if(offset<spec.Size)using(var r=(open??Open)(spec.Url,offset,token)){
-                        bool append=r.Status==206;
-                        if(append){var match=Regex.Match(r.Range??"",@"^bytes (\d+)-(\d+)/(\d+)$");if(!match.Success||Int64.Parse(match.Groups[1].Value)!=offset||Int64.Parse(match.Groups[3].Value)!=spec.Size)throw new IOException("续传范围错误，未合并收到的数据。");}
-                        else if(r.Status==200)offset=0;else throw new IOException("下载站响应异常："+r.Status);
-                        long done=offset;DateTime report=DateTime.MinValue;
-                        using(var f=new FileStream(part,append?FileMode.Append:FileMode.Create,FileAccess.Write,FileShare.Read)){byte[] b=new byte[262144];int n;while((n=r.Body.Read(b,0,b.Length))>0){token.ThrowIfCancellationRequested();done+=n;if(done>spec.Size)throw new IOException("下载文件大小异常。");f.Write(b,0,n);if((DateTime.UtcNow-report).TotalMilliseconds>200){progress.Report(new Update(spec.Name+"："+(done/1000000.0).ToString("0.0")+" / "+(spec.Size/1000000.0).ToString("0.0")+" MB",(int)(100*done/spec.Size)));report=DateTime.UtcNow;}}}
-                    }
-                    token.ThrowIfCancellationRequested();progress.Report(new Update("校验下载文件："+spec.Name));
-                    if(!File.Exists(part)||new FileInfo(part).Length!=spec.Size)throw new IOException("下载尚未完整，下次重试会尝试续传。");
-                    if(Hash(part)!=spec.Sha){File.Delete(part);throw new IOException("文件校验不通过，已丢弃错误片段，请重试。");}
-                    if(File.Exists(destination))File.Replace(part,destination,null);else File.Move(part,destination);return;
-                }catch(OperationCanceledException){throw;}
-                catch(Exception ex){token.ThrowIfCancellationRequested();last=ex;if(ex is WebException){var wr=((WebException)ex).Response;if(wr!=null)wr.Dispose();}if(!(ex is IOException)&&!(ex is WebException))throw;}
+                foreach(string url in urls){
+                    token.ThrowIfCancellationRequested();if(File.Exists(part)&&new FileInfo(part).Length>spec.Size)File.Delete(part);long offset=File.Exists(part)?new FileInfo(part).Length:0;
+                    if(alt!=null&&url==alt)progress.Report(new Update("切换国内镜像继续下载："+spec.Name));
+                    try{
+                        if(offset<spec.Size)using(var r=(open??Open)(url,offset,token)){
+                            bool append=r.Status==206;
+                            if(append){var match=Regex.Match(r.Range??"",@"^bytes (\d+)-(\d+)/(\d+)$");if(!match.Success||Int64.Parse(match.Groups[1].Value)!=offset||Int64.Parse(match.Groups[3].Value)!=spec.Size)throw new IOException("续传范围错误，未合并收到的数据。");}
+                            else if(r.Status==200)offset=0;else throw new IOException("下载站响应异常："+r.Status);
+                            long done=offset;DateTime report=DateTime.MinValue;
+                            using(var f=new FileStream(part,append?FileMode.Append:FileMode.Create,FileAccess.Write,FileShare.Read)){byte[] b=new byte[262144];int n;while((n=r.Body.Read(b,0,b.Length))>0){token.ThrowIfCancellationRequested();done+=n;if(done>spec.Size)throw new IOException("下载文件大小异常。");f.Write(b,0,n);if((DateTime.UtcNow-report).TotalMilliseconds>200){progress.Report(new Update(spec.Name+"："+(done/1000000.0).ToString("0.0")+" / "+(spec.Size/1000000.0).ToString("0.0")+" MB",(int)(100*done/spec.Size)));report=DateTime.UtcNow;}}}
+                        }
+                        token.ThrowIfCancellationRequested();progress.Report(new Update("校验下载文件："+spec.Name));
+                        if(!File.Exists(part)||new FileInfo(part).Length!=spec.Size)throw new IOException("下载尚未完整，下次重试会尝试续传。");
+                        if(Hash(part)!=spec.Sha){File.Delete(part);throw new IOException("文件校验不通过，已丢弃错误片段，请重试。");}
+                        if(File.Exists(destination))File.Replace(part,destination,null);else File.Move(part,destination);return;
+                    }catch(OperationCanceledException){throw;}
+                    catch(Exception ex){token.ThrowIfCancellationRequested();last=ex;if(ex is WebException){var wr=((WebException)ex).Response;if(wr!=null)wr.Dispose();}if(!(ex is IOException)&&!(ex is WebException))throw;}
+                }
                 if(attempt<2){progress.Report(new Update("连接中断，准备重试（"+(attempt+2)+"/3）："+spec.Name));if(token.WaitHandle.WaitOne(900))token.ThrowIfCancellationRequested();}
             }
             throw new IOException("下载失败："+spec.Name+"。请检查网络后点同一个安装按钮重试；已完成的文件和可用片段会复用。",last);
+        }
+        public static void FetchAll(List<Spec> specs,string directory,CancellationToken token,bool mirror,IProgress<Update> progress,Func<string,long,CancellationToken,Reply> open=null){
+            if(specs.Count==0)return;
+            ServicePointManager.DefaultConnectionLimit=6;
+            progress.Report(new Update("开始并行下载 "+specs.Count+" 个文件…"));
+            var pending=new Queue<Spec>(specs);Exception failure=null;object gate=new object();
+            int workers=Math.Min(3,specs.Count);var threads=new List<Thread>(workers);
+            for(int i=0;i<workers;i++){
+                var t=new Thread(()=>{
+                    while(true){
+                        Spec spec=null;
+                        lock(gate){if(failure!=null||pending.Count==0)return;spec=pending.Dequeue();}
+                        try{Fetch(spec,Path.Combine(directory,spec.Name),token,mirror,progress,open);}
+                        catch(Exception ex){lock(gate){if(failure==null)failure=ex;}}
+                    }
+                }){IsBackground=true};t.Start();threads.Add(t);
+            }
+            foreach(var t in threads)t.Join();
+            if(failure!=null){if(failure is OperationCanceledException)throw (OperationCanceledException)failure;throw new IOException("并行下载失败："+failure.Message,failure);}
         }
         public static void Extract(string zip,string root,CancellationToken token){
             Directory.CreateDirectory(root);if((File.GetAttributes(root)&FileAttributes.ReparsePoint)!=0)throw new IOException("安装目录不能是目录链接。");long total=0;
@@ -107,34 +138,42 @@ namespace SubtitleEasy {
         public static void Payload(CancellationToken token){Directory.CreateDirectory(Cache);string zip=Path.Combine(Cache,"app-"+Version+".zip");using(var input=Assembly.GetExecutingAssembly().GetManifestResourceStream("payload.zip"))using(var output=File.Create(zip))input.CopyTo(output);Files.Extract(zip,App,token);}
         static List<string> Script(string action,params string[] extra){var list=new List<string>{"-X","utf8","-E","-s",Path.Combine(App,"easy_runtime.py"),action};list.AddRange(extra);return list;}
         static bool Probe(string mode,CancellationToken token,Action<string> log){if(!File.Exists(Python))return false;try{using(var limited=CancellationTokenSource.CreateLinkedTokenSource(token)){limited.CancelAfter(60000);return Processes.Run(Python,Script("probe-"+mode),App,limited.Token,log).ExitCode==0;}}catch(OperationCanceledException){token.ThrowIfCancellationRequested();return false;}catch{return false;}}
-        static void EnsureVc(Dictionary<string,object> manifest,CancellationToken token,IProgress<Update> progress,Action<string> log){
-            var spec=Spec.Read((Dictionary<string,object>)manifest["vc_runtime"]);string exe=Path.Combine(Cache,spec.Name);Files.Fetch(spec,exe,token,progress);
+        public static bool HasNvidiaGpu(){
+            try{
+                using(var s=new System.Management.ManagementObjectSearcher("SELECT Name FROM Win32_VideoController")){
+                    foreach(var o in s.Get()){using(o){var n=Convert.ToString(o["Name"]??"");if(n.IndexOf("NVIDIA",StringComparison.OrdinalIgnoreCase)>=0)return true;}}
+                }
+            }catch{}
+            return false;
+        }
+        static void EnsureVc(Dictionary<string,object> manifest,bool mirror,CancellationToken token,IProgress<Update> progress,Action<string> log){
+            var spec=Spec.Read((Dictionary<string,object>)manifest["vc_runtime"]);string exe=Path.Combine(Cache,spec.Name);Files.Fetch(spec,exe,token,mirror,progress);
             progress.Report(new Update("需要补齐 Windows 运行库。如果系统弹出权限窗口，请确认发布者为 Microsoft 后选择“是”。"));log("正在运行 Microsoft VC++ 安装器；不更改杀毒设置。");
             token.ThrowIfCancellationRequested();using(var p=Process.Start(new ProcessStartInfo(exe,"/install /passive /norestart"){UseShellExecute=true,Verb="runas"})){if(p==null)throw new IOException("Windows 运行库安装器未启动。");p.WaitForExit();if(p.ExitCode!=0&&p.ExitCode!=3010&&p.ExitCode!=1638)throw new IOException("Windows 运行库未安装完成，返回码 "+p.ExitCode+"。请看小白指南的 DLL 错误一节。");if(p.ExitCode==3010)log("Windows 运行库建议重启电脑。若下一步仍提示 DLL，请重启后再次点安装按钮。");}token.ThrowIfCancellationRequested();
         }
-        public static void Install(string model,bool gpu,CancellationToken token,IProgress<Update> progress,Action<string> log){
-            if(!new[]{"small","turbo","srt"}.Contains(model))throw new ArgumentException("安装模式无效。");
+        public static void Install(string model,bool gpu,bool mirror,CancellationToken token,IProgress<Update> progress,Action<string> log){
+            if(!new[]{"small","turbo","tiny","srt"}.Contains(model))throw new ArgumentException("安装模式无效。");
             token.ThrowIfCancellationRequested();string appLock=Path.Combine(DataRoot,"application.lock");if(File.Exists(appLock)){try{using(File.Open(appLock,FileMode.Open,FileAccess.ReadWrite,FileShare.None)){} }catch(IOException){throw new IOException("字幕工坊仍在运行。请保存项目并关闭字幕工坊主窗口，再点安装 / 修复。");}}
-            Directory.CreateDirectory(Root);var drive=new DriveInfo(Path.GetPathRoot(Root));long need=model=="turbo"?7L*1000000000:model=="small"?3L*1000000000:500L*1000000;
+            Directory.CreateDirectory(Root);var drive=new DriveInfo(Path.GetPathRoot(Root));long need=model=="turbo"?7L*1000000000:model=="small"?3L*1000000000:model=="tiny"?15L*100000000:500L*1000000;
             if(drive.AvailableFreeSpace<need)throw new IOException("安装所在磁盘空间不足。此模式请预留约 "+(need/1000000000.0).ToString("0.0")+" GB 后重试；已有 SRT 可先选择仅字幕模式。");
             if(File.Exists(Ready))File.Delete(Ready); // A cancelled repair must not remain marked as complete.
             progress.Report(new Update("1/6　准备字幕工坊程序…"));Payload(token);var manifest=Manifest();
             progress.Report(new Update("2/6　准备独立 Python 运行环境…"));
             if(!Probe("basic",token,null)){
-                var spec=Spec.Read((Dictionary<string,object>)manifest["python"]);string zip=Path.Combine(Cache,spec.Name);Files.Fetch(spec,zip,token,progress);progress.Report(new Update("2/6　展开运行环境，请稍等…"));Files.Extract(zip,PythonRoot,token);
+                var spec=Spec.Read((Dictionary<string,object>)manifest["python"]);string zip=Path.Combine(Cache,spec.Name);Files.Fetch(spec,zip,token,mirror,progress);progress.Report(new Update("2/6　展开运行环境，请稍等…"));Files.Extract(zip,PythonRoot,token);
                 if(!Probe("basic",token,log))throw new IOException("E102：Python / 窗口组件未能启动。请关闭旧窗口后重试；仍失败时导出安装诊断。");
             }
             if(model!="srt"){
                 progress.Report(new Update("3/6　准备语音识别组件…"));
                 if(!Probe("asr",token,null)){
-                    string wheelDir=Path.Combine(Cache,"wheels");foreach(var item in (List<object>)manifest["wheels"]){var spec=Spec.Read((Dictionary<string,object>)item);Files.Fetch(spec,Path.Combine(wheelDir,spec.Name),token,progress);}
+                    string wheelDir=Path.Combine(Cache,"wheels");var wheels=new List<Spec>();foreach(var item in (List<object>)manifest["wheels"])wheels.Add(Spec.Read((Dictionary<string,object>)item));Files.FetchAll(wheels,wheelDir,token,mirror,progress);
                     progress.Report(new Update("3/6　安装已校验的识别组件…"));
                     var args=new[]{"-X","utf8","-I","-m","pip","--isolated","install","--no-index","--find-links",wheelDir,"--require-hashes","--only-binary=:all:","--force-reinstall","--disable-pip-version-check","--no-warn-script-location","-r",Path.Combine(App,"requirements-windows.lock")};
                     if(Processes.Run(Python,args,App,token,log).ExitCode!=0)throw new IOException("E201：识别组件安装未完成。请关闭字幕工坊，再点安装 / 修复；若仍失败，请导出安装诊断。");
-                    if(!Probe("asr",token,log)){EnsureVc(manifest,token,progress,log);if(!Probe("asr",token,log))throw new IOException("E202：识别组件仍无法载入。请重启电脑后重试；旧电脑 CPU 不兼容或 DLL 被安全软件拦截时，请查看指南并导出诊断。");}
+                    if(!Probe("asr",token,log)){EnsureVc(manifest,mirror,token,progress,log);if(!Probe("asr",token,log))throw new IOException("E202：识别组件仍无法载入。请重启电脑后重试；旧电脑 CPU 不兼容或 DLL 被安全软件拦截时，请查看指南并导出诊断。");}
                 }
                 progress.Report(new Update("4/6　准备 "+model+" 识别模型…"));var models=(Dictionary<string,object>)manifest["models"];var modelSpec=(Dictionary<string,object>)models[model];string modelRoot=Path.Combine(DataRoot,"models","prepared",model);Directory.CreateDirectory(modelRoot);
-                foreach(var item in (List<object>)modelSpec["files"]){var spec=Spec.Read((Dictionary<string,object>)item);Files.Fetch(spec,Path.Combine(modelRoot,spec.Name),token,progress);}
+                var modelFiles=new List<Spec>();foreach(var item in (List<object>)modelSpec["files"])modelFiles.Add(Spec.Read((Dictionary<string,object>)item));Files.FetchAll(modelFiles,modelRoot,token,mirror,progress);
                 Files.AtomicText(Path.Combine(modelRoot,"ready.json"),Json.Write(modelSpec));
             }
             bool gpuReady=false;progress.Report(new Update("5/6　完成运行检查…"));

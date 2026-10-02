@@ -18,7 +18,7 @@ def initialize_settings(model, gpu=False):
     if path.exists():
         return  # Preserve existing users' choices and projects.
     output = Path.home() / ("Videos" if (Path.home() / "Videos").exists() else "Documents") / "SubtitleStudio"
-    data = {"asr_model": model if model in {"small", "turbo"} else "small",
+    data = {"asr_model": model if model in {"small", "turbo", "tiny"} else "small",
             "device": "NVIDIA GPU（4 GB 省显存）" if gpu else "CPU（直接使用）",
             "local_model": "", "language": "自动识别", "output": str(output),
             "model": DEFAULT_MODEL, "glossary": ""}

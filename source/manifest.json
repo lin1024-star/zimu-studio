@@ -275,6 +275,36 @@
           "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1"
         }
       ]
+    },
+    "tiny": {
+      "repo": "Systran/faster-whisper-tiny",
+      "revision": "master",
+      "files": [
+        {
+          "name": "config.json",
+          "url": "https://modelscope.cn/models/Systran/faster-whisper-tiny/resolve/master/config.json",
+          "size": 2249,
+          "sha256": "a73a28cdfe1c43ccc7202fa333d1f89c202477271407ae9a7f19afa52039cac8"
+        },
+        {
+          "name": "model.bin",
+          "url": "https://modelscope.cn/models/Systran/faster-whisper-tiny/resolve/master/model.bin",
+          "size": 75538270,
+          "sha256": "dcb76c6586fc06cbdac6dd21f14cfd129cc4cdd9dce19bf4ffa62e59cbe6e6d1"
+        },
+        {
+          "name": "tokenizer.json",
+          "url": "https://modelscope.cn/models/Systran/faster-whisper-tiny/resolve/master/tokenizer.json",
+          "size": 2203239,
+          "sha256": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab"
+        },
+        {
+          "name": "vocabulary.txt",
+          "url": "https://modelscope.cn/models/Systran/faster-whisper-tiny/resolve/master/vocabulary.txt",
+          "size": 459861,
+          "sha256": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913"
+        }
+      ]
     }
   },
   "vc_runtime": {

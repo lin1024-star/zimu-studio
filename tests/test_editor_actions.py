@@ -48,6 +48,9 @@ class Tree:
 class Controller:
     def __init__(self):
         self.project, self.project_path, self.selected_id, self.proc = None, None, None, None
+        self.queue_files, self.queue_list, self.in_queue = [], None, False
+        self.queue_mode, self.queue_index, self.queue_ok, self.queue_fail = "", 0, 0, 0
+        self.last_job_ok = False
         for name in ("source_var", "out_var", "lang_var", "status_var", "summary_var", "time_start", "time_end", "api_key_var", "model_var", "local_model_var"):
             setattr(self, name, Value())
         self.force_var = Value(False)
