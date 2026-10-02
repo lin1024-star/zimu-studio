@@ -1,0 +1,61 @@
+﻿字幕工坊 1.6 懒人包验证记录
+生成日期：2026-09-30
+
+已完成的检查
+1. C# 启动器使用微软 .NET Framework 4.5 参考程序集编译，x64 Windows GUI 目标。
+2. 对编译产物检查已知 String.Split / Trim 重载兼容风险：0 个不兼容调用。
+3. Python 回归检查 75 项通过：六份导出、字幕配对、编码、SRT 导入、已付费译文复用、添加字幕、时长与备份、诊断脱敏、CPU/GPU 回退、安装设置保留和本地模型路径。
+4. 安装器逻辑检查 20 项通过：完整缓存复用、续传、服务器忽略 Range、截断响应、错误续传范围、错误哈希、取消保留片段、完整片段发布、拒绝非 HTTPS 清单、正常与恶意路径解压、已有链接保护、参数引用、脱敏、嵌入资源和真实 Python ZIP 解压。
+5. 已实际下载并校验官方 Python 完整 Windows ZIP、25 个 Windows 兼容 wheel 和 Microsoft VC++ 安装包，共 27 个文件；大小与 SHA-256 均匹配清单。wheel 哈希来自 PyPI 元数据。
+6. Python 运行 ZIP 中已确认有 python.exe、pythonw.exe、Tcl/Tk、_tkinter.pyd 和 pip。没有误用不带 Tk 的 embeddable 包。
+7. small/Turbo 使用官方托管模型仓库的固定 commit 和文件哈希；模型大二进制未在本机下载或执行，安装时逐文件校验后才标为可用。
+8. 110 条 FAQ 的页面结构、唯一锚点、站内链接、JavaScript 语法及内置指南与随包指南一致性检查通过。
+
+验证边界
+本次执行环境为 Linux，未完成 Windows 实机上的安装器界面、首次联网安装全过程、Tk 窗口、桌面快捷方式、UAC 运行库安装、实际视频 ASR、NVIDIA GPU 推理或 PR 导入检查。
+依赖包的下载与哈希验证、逻辑测试，不等于已在所有 Windows 电脑上跑通。
+本环境的 Mono HTTPS 证书链验证与 Windows 证书存储不同；生产安装器保留正常 HTTPS 验证，没有以关闭校验来规避此限制。
+翻译测试使用模拟 API 响应，没有使用任何真实密钥或发起付费 DeepSeek 请求。实际 API 可用性、计费与模型支持以官方平台为准。
+图文指南中的界面为操作位置示意，不冒充 Windows 实机截图。
+
+朋友第一次使用：推荐先用 small + CPU，运行一个 30 秒到 1 分钟短片的“仅识别原文”；需要翻译时再填自己的 API 密钥。出现问题可导出本机诊断，避免重复重装和重做字幕。
+
+附：本次测试输出
+
+framework-audit.log
+Audited 82 method bodies, 91 String calls; incompatible calls=0
+
+installer-tests.log
+PASS download_publish_and_reuse
+PASS download_resume_exact
+PASS server_ignores_range_restarts
+PASS truncated_download_resumes
+PASS bad_range_never_appended
+PASS hash_mismatch_preserves_old_file
+PASS cancel_retains_partial
+PASS complete_partial_needs_no_network
+PASS bad_spec_rejected_before_request
+PASS zip_unicode_and_replace
+PASS zip_traversal_rejected
+PASS zip_windows_path_rejected
+PASS zip_drive_path_rejected
+PASS zip_cancelled_before_write
+PASS zip_parent_link_rejected
+PASS zip_temporary_link_rejected
+PASS redact_key_url_home
+PASS windows_argument_quoting
+PASS manifest_and_embedded_payload
+PASS official_python_zip_extract
+PASS TOTAL 20
+
+package-checks.log
+Guide: 110 FAQ entries, unique IDs, valid internal anchors, embedded copy matches, JavaScript syntax passes.
+Pinned dependency archives verified: 27 (Python + 25 wheels + VC++).
+Model binaries: metadata hashes and immutable URLs recorded; not downloaded or executed on this host.
+
+Python unittest summary
+
+----------------------------------------------------------------------
+Ran 75 tests in 1.745s
+
+OK

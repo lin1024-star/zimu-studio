@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "runtime_id": "cuda-12.8.1-ct2-4.8.2-v1",
+  "ctranslate2_version": "4.8.2",
+  "components": [
+    {
+      "name": "cuda_cudart",
+      "version": "12.8.90",
+      "url": "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.8.90-archive.zip",
+      "size": 3037735,
+      "sha256": "4a39058fd8519444a81cfc7ae055d136f48d1a31ffa41ae255b35b2edd61e13b",
+      "filename": "cuda_cudart-windows-x86_64-12.8.90-archive.zip",
+      "dlls": [
+        "cudart64_12.dll"
+      ]
+    },
+    {
+      "name": "libcublas",
+      "version": "12.8.4.1",
+      "url": "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.8.4.1-archive.zip",
+      "size": 563660944,
+      "sha256": "57a470112cec7e112c95253dde8b3c7184d795dbd92b0bde77a4cb7f8c94c8aa",
+      "filename": "libcublas-windows-x86_64-12.8.4.1-archive.zip",
+      "dlls": [
+        "cublas64_12.dll",
+        "cublasLt64_12.dll"
+      ]
+    }
+  ],
+  "wheels": {
+    "cp310": {
+      "filename": "ctranslate2-4.8.2-cp310-cp310-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/eb/ae/73680b494bb48158332a5d6e13f4b07fe7e38fe799ae2d760753ec2b9e5a/ctranslate2-4.8.2-cp310-cp310-win_amd64.whl",
+      "size": 19219507,
+      "sha256": "8ad4ee86fb93e8d7456fbcf77735d33c51eda4f363e15db4151b0e56e8633677"
+    },
+    "cp311": {
+      "filename": "ctranslate2-4.8.2-cp311-cp311-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/7e/86/21926da682103a20d4f4833b389131b801c71e6b8d6047be5f0a28fe673a/ctranslate2-4.8.2-cp311-cp311-win_amd64.whl",
+      "size": 19220522,
+      "sha256": "995938fcd24a1174a7abf9765e7fa216b5b91a1d8e8c4c8f383c7a186e8bab2e"
+    },
+    "cp312": {
+      "filename": "ctranslate2-4.8.2-cp312-cp312-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/4e/23/e3b5322ff7368fcbed181ea4c209149416e7940b5b04971d5ee4084afe1a/ctranslate2-4.8.2-cp312-cp312-win_amd64.whl",
+      "size": 19222069,
+      "sha256": "d94421d565d0de61c032998f737a18942b0f2bef40c0424b1846ec6f67300105"
+    },
+    "cp313": {
+      "filename": "ctranslate2-4.8.2-cp313-cp313-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/c2/fc/a9e9e0ce1c0a29bc4c17bf56ccb4274293c0bbb2b8aae561727d82fcb0ca/ctranslate2-4.8.2-cp313-cp313-win_amd64.whl",
+      "size": 19222061,
+      "sha256": "399c20a7336b6358f69ce3c615e090eabc08f29735a079fd1ac1e464119e0861"
+    },
+    "cp314": {
+      "filename": "ctranslate2-4.8.2-cp314-cp314-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/f2/86/03386a60b634a34c820e00f82bec808d38841cc2c007ec6b797892a9a5b5/ctranslate2-4.8.2-cp314-cp314-win_amd64.whl",
+      "size": 19478465,
+      "sha256": "00bc9f44172d05bd2becefe757d2397ab3292fad1695169f9ebb9c16eb497ce2"
+    },
+    "cp39": {
+      "filename": "ctranslate2-4.8.2-cp39-cp39-win_amd64.whl",
+      "url": "https://files.pythonhosted.org/packages/21/50/7fcab0bb4afeb235902415877a468101b4a0b43598e4bcf659bff9d434c3/ctranslate2-4.8.2-cp39-cp39-win_amd64.whl",
+      "size": 19237614,
+      "sha256": "2d86e5c26e3fc0a1dce410951fecbce4f92e3facbd1a62c93d92276bcbd53d08"
+    }
+  },
+  "sources": [
+    "https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.8.1.json",
+    "https://pypi.org/pypi/ctranslate2/4.8.2/json",
+    "https://github.com/OpenNMT/CTranslate2/blob/v4.8.2/python/tools/prepare_build_environment_windows.sh"
+  ],
+  "dll_hashes": {
+    "cudart64_12.dll": {
+      "size": 573952,
+      "sha256": "c2c9a9c22a9bcba90e261825968836787b331038047a26770cffb7a583c28344"
+    },
+    "cublas64_12.dll": {
+      "size": 113716224,
+      "sha256": "9513540e4ec4c51ee9e7304138c2cc255c29a8c181f9e80c38efa25738becd99"
+    },
+    "cublasLt64_12.dll": {
+      "size": 674667520,
+      "sha256": "b199d1ff892a81b7fd3d57ba1781549609b41500b36008fef326038393ad46c7"
+    }
+  }
+}

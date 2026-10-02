@@ -1,0 +1,37 @@
+SubtitleStudio 1.6 — Third-party components
+
+This ZIP includes our application, installer source, guides, and tests.
+Third-party runtimes, wheels, and speech model weights are downloaded separately
+from their publishers during setup and retain their own licenses. The MIT
+license in this package applies to SubtitleStudio's original code and docs,
+not to every downloaded third-party component.
+
+Python 3.13.15 x64 (PSF license and bundled component notices):
+https://www.python.org/downloads/release/python-31315/
+https://docs.python.org/3.13/license.html
+Downloaded full Windows runtime includes Tcl/Tk and pip and their notices.
+
+faster-whisper (MIT): https://github.com/SYSTRAN/faster-whisper
+CTranslate2 (MIT): https://github.com/OpenNMT/CTranslate2
+PyAV and its bundled FFmpeg libraries: https://github.com/PyAV-Org/PyAV
+ONNX Runtime (MIT): https://github.com/microsoft/onnxruntime
+All 25 pinned wheel versions, URLs and SHA-256 hashes: source/manifest.json
+Each installed distribution contains its own license/metadata where supplied.
+
+Speech models and model cards:
+https://huggingface.co/Systran/faster-whisper-small
+https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo
+Model files are fetched from immutable revisions recorded in the manifest.
+
+Optional CUDA runtime/cuBLAS components and their NVIDIA license terms:
+https://developer.download.nvidia.com/compute/cuda/redist/
+The exact component versions and hashes are in payload/gpu_manifest.json.
+This package does not include a NVIDIA display driver or the CUDA SDK.
+
+Optional Microsoft Visual C++ x64 Redistributable:
+https://aka.ms/vs/17/release/vc_redist.x64.exe
+The original Microsoft installer and its terms apply. This tool only invokes it
+if native speech recognition dependencies cannot load after installation.
+
+The self-contained bootstrapper targets Microsoft .NET Framework 4.5 and uses
+Windows 10/11's .NET Framework 4.x runtime. No third-party .NET DLLs are bundled.

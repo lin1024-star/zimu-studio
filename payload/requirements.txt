@@ -1,0 +1,8 @@
+faster-whisper==1.2.1
+# Bounds keep the Windows CPU runtime compatible with this release.
+ctranslate2==4.8.2
+av>=11,<19
+onnxruntime>=1.14,<2
+numpy>=1.26,<3
+huggingface-hub>=0.21,<2
+httpx[socks]>=0.27,<1

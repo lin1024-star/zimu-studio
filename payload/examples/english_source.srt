@@ -1,0 +1,8 @@
+﻿1
+00:00:00,000 --> 00:00:03,000
+Please keep the original audio.
+
+2
+00:00:03,000 --> 00:00:06,000
+Export the subtitles as separate files.
+
