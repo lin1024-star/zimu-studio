@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -46,3 +47,12 @@ class WinSecretTests(unittest.TestCase):
     def test_corrupt_blob_returns_none(self):
         (winsecret.DATA_ROOT / winsecret.SECRET_FILE).write_text("!!!not-base64!!!", "ascii")
         self.assertIsNone(load_key())
+
+    @unittest.skipUnless(os.name == "nt", "真实 DPAPI 仅 Windows 可用")
+    def test_real_dpapi_roundtrip(self):
+        # 走真实 CryptProtectData / CryptUnprotectData，锁定 64 位指针释放的回归。
+        save_key("sk-real-canary")
+        try:
+            self.assertEqual(load_key(), "sk-real-canary")
+        finally:
+            forget_key()

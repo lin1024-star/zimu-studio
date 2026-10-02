@@ -37,7 +37,8 @@ HELP = """快速使用
 6. 完成后自动导出六份文件：原文、中文、混合版各一份 SRT 和 TXT。混合版原文在上、中文在下，逐条对应。点击「打开输出文件夹」。
 7. 点击「新增字幕…」，填写开始、结束时间和原文，也可手填中文。保存后自动按时间插入；继续翻译只补译中文为空的条目。
 8. 只有中文字幕时，可直接修改左侧正文并导出中文 SRT / TXT 两份。要生成原文和混合版，还需要对应原文。
-9. 只有需要翻译缺失条目时才填写 DeepSeek API 密钥。密钥只在本次运行内使用，关闭后清除，不放进项目或导出文件。
+9. 只有需要翻译缺失条目时才填写 DeepSeek API 密钥。默认只在本次运行内使用，关闭后清除；勾选「记住密钥」时用 Windows 账户级加密保存在本机（仅当前系统用户可解），仍不放进项目或导出文件。
+10. 多个文件可点「添加多个文件…」加入队列，再点识别或翻译；队列依次处理，单个失败自动跳过，完成后统一提示。翻译前会按待译内容弹出费用预估。
 
 字幕持续时间
 
@@ -57,11 +58,11 @@ TXT 是文稿，没有供 PR 同步的时间轴。要修改字幕样式，请在
 
 识别模型
 
-small：默认，适合普通电脑试用。medium / large-v3：适合更重视准确度的素材，耗时和内存更多。
+tiny：最小最快，适合老电脑或磁盘紧张，准确度略低。small：默认，适合普通电脑试用。medium / large-v3：适合更重视准确度的素材，耗时和内存更多。
 turbo：较大的多语言模型，适合设备较好的电脑。最终成片仍需人工校对。
 CPU 模式可直接使用。NVIDIA 显卡请先点击“启用显卡加速”：首次自动下载约 570 MB 官方组件，之后无需重复下载。
 显卡默认使用 4 GB 省显存模式；显存不足或显卡不可用时自动改用 CPU。本程序不会安装整套 CUDA 开发工具。
-首次使用某个模型需从 Hugging Face 下载。可以在设置中选择已下载完整的 faster-whisper / CTranslate2 模型文件夹。
+首次使用某个模型需联网下载：tiny 来自魔搭 ModelScope（国内直连），其余来自 Hugging Face（安装器支持国内镜像）。可以在设置中选择已下载完整的 faster-whisper / CTranslate2 模型文件夹。
 语音识别在电脑上运行。翻译时只向官方 api.deepseek.com 发送原文、相邻上下文、部分已译内容及术语说明。
 视频默认读取第一条音轨。需要其他音轨时，先在剪辑软件中导出对应音频，再导入本程序。
 
@@ -79,7 +80,7 @@ CPU 模式可直接使用。NVIDIA 显卡请先点击“启用显卡加速”：
 
 费用与准确度
 
-本地识别没有按次 API 费用；首次需下载模型。DeepSeek 翻译按其 API 用量收费。
+本地识别没有按次 API 费用；首次需下载模型。DeepSeek 翻译按其 API 用量收费，翻译前会按待译内容预估金额，实际以官方账单为准。
 自动识别和翻译可能听错、漏字或断句不理想。发布前请核对人名、数字、术语与字幕同步。
 当服务返回缺行、重复序号或截断结果时，程序会缩小批次重试，仍失败则停止，不把空译文当作完成。
 网络超时重试可能重复产生调用费用，费用请查看 DeepSeek 后台。
@@ -126,6 +127,7 @@ class Application(tk.Tk):
         self.queue_ok = 0
         self.queue_fail = 0
         self.last_job_ok = False
+        self.pending_translate = False
         self.diagnostics = Diagnostics(USER_DIR, APP_VERSION)
         self.diagnostic_results = queue.Queue()
         self.diagnostic_exporting = False
@@ -254,15 +256,14 @@ class Application(tk.Tk):
             self.busy_controls.append(btn)
             if row == 1:
                 self.busy_controls.append(entry)
-        self.queue_list = tk.Listbox(files, height=3, font=(FONT_FAMILY, 9), relief="solid", borderwidth=1)
-        self.queue_list.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.queue_list = tk.Listbox(files, height=2, font=(FONT_FAMILY, 9), relief="solid", borderwidth=1)
+        self.queue_list.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         qbtns = ttk.Frame(files)
-        qbtns.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        qbtns.grid(row=2, column=2, sticky="nsew", pady=(6, 0), padx=(8, 0))
         qbtn_add = ttk.Button(qbtns, text="添加多个文件…", command=self.add_queue_files)
-        qbtn_add.pack(side="left")
+        qbtn_add.pack(fill="x")
         qbtn_clear = ttk.Button(qbtns, text="清空队列", command=self.clear_queue)
-        qbtn_clear.pack(side="left", padx=8)
-        ttk.Label(qbtns, text="队列非空时，识别 / 翻译会依次处理每个文件，失败自动跳过", style="Muted.TLabel").pack(side="left", padx=8)
+        qbtn_clear.pack(fill="x", pady=(2, 0))
         self.busy_controls.extend([qbtn_add, qbtn_clear])
         self.refresh_queue_list()
         options = ttk.Frame(main)
@@ -297,7 +298,7 @@ class Application(tk.Tk):
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
         self.tree = ttk.Treeview(table, columns=("id", "time", "source", "zh"), show="headings", selectmode="browse", height=3)
-        for col, name, width in [("id", "序号", 45), ("time", "时间段", 235), ("source", "原文字幕", 335), ("zh", "中文字幕", 335)]:
+        for col, name, width in [("id", "序号", 45), ("time", "时间段", 210), ("source", "原文字幕", 305), ("zh", "中文字幕", 305)]:
             self.tree.heading(col, text=name)
             self.tree.column(col, width=width, minwidth=45, stretch=col in ("source", "zh"))
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -314,9 +315,9 @@ class Application(tk.Tk):
         self.source_label.grid(row=0, column=0, sticky="w")
         self.zh_label = ttk.Label(editor, text="中文校对")
         self.zh_label.grid(row=0, column=1, sticky="w", padx=(8, 0))
-        self.source_text = ScrolledText(editor, height=3, wrap="word", font=(FONT_FAMILY, 10), relief="solid", borderwidth=1)
+        self.source_text = ScrolledText(editor, height=2, wrap="word", font=(FONT_FAMILY, 10), relief="solid", borderwidth=1)
         self.source_text.grid(row=1, column=0, sticky="ew", pady=4)
-        self.zh_text = ScrolledText(editor, height=3, wrap="word", font=(FONT_FAMILY, 10), relief="solid", borderwidth=1)
+        self.zh_text = ScrolledText(editor, height=2, wrap="word", font=(FONT_FAMILY, 10), relief="solid", borderwidth=1)
         self.zh_text.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=4)
         row = ttk.Frame(main)
         row.grid(row=8, column=0, sticky="ew")
@@ -693,6 +694,8 @@ class Application(tk.Tk):
                 self.notebook.select(1)
                 self.key_entry.focus_set()
                 return
+            if mode == "translate" and not messagebox.askyesno("开始队列翻译", f"队列共 {len(self.queue_files)} 个文件，将依次识别并翻译。\n翻译费用按 DeepSeek 官方账单结算；每个文件的费用预估会写入日志。\n\n必须确认后才会开始。是否开始？"):
+                return
             self.in_queue = True
             self.queue_mode = mode
             self.queue_index = 0
@@ -729,14 +732,8 @@ class Application(tk.Tk):
             self.key_entry.focus_set()
             return
         if mode == "translate":
-            try:
-                from winsecret import forget_key, save_key
-                if self.remember_var.get() and self.api_key_var.get().strip():
-                    save_key(self.api_key_var.get().strip())
-                else:
-                    forget_key()
-            except Exception as exc:
-                self.log(f"密钥本地保存未生效（{type(exc).__name__}），本次翻译不受影响。")
+            if not self.persist_api_key():
+                self.log("密钥本地保存未生效，本次翻译不受影响。")
             cues_for_estimate = None
             if self.project and self.project.get("recognition_complete"):
                 cues_for_estimate = self.project["cues"]
@@ -751,8 +748,12 @@ class Application(tk.Tk):
                 n, tin, tout, cost = estimate_cost(cues_for_estimate, self.model_var.get().strip(), self.force_var.get())
                 if n and self.in_queue:
                     self.log(f"费用预估（队列模式自动继续）：约 {n} 条字幕，预计约 ¥{cost:.2f}，实际以官方账单为准。")
-                elif n and not messagebox.askyesno("翻译费用预估", f"本次将翻译约 {n} 条字幕，预计调用约 {tin:,} 输入 + {tout:,} 输出 tokens，\n按官方单价估算约 ¥{cost:.2f}。实际费用以 DeepSeek 官方账单为准。\n\n是否继续？"):
+                elif n and not messagebox.askyesno("翻译费用预估", f"本次将翻译约 {n} 条字幕，预计调用约 {tin:,} 输入 + {tout:,} 输出 tokens，\n按官方单价估算约 ¥{cost:.2f}。实际费用以 DeepSeek 官方账单为准。\n\n必须确认后才会开始翻译。是否继续？"):
                     return
+            elif not self.in_queue:
+                # 全新素材：先本地识别（免费），拿到真实原文后再弹精确的费用确认
+                self.pending_translate = True
+                self.log("全新素材：先进行本地识别（不产生费用）；识别完成后会按真实原文弹出翻译费用确认。")
         if not self.out_var.get().strip():
             messagebox.showinfo("输出目录", "请先选择输出目录。")
             return
@@ -762,11 +763,12 @@ class Application(tk.Tk):
             messagebox.showerror("模型目录", "本地模型文件夹中没有 model.bin。请选择完整的 faster-whisper 模型，或清空该字段自动下载。")
             return
         self.save_settings()
+        effective_mode = "transcribe" if self.pending_translate else mode
         config = {"input": self.source_var.get(), "project_path": self.project_path, "output": self.out_var.get(),
                   "asr_model": local or self.asr_var.get(), "language": {"英语": "en", "日语": "ja"}.get(self.lang_var.get(), ""),
                   "device": "cpu" if self.device_var.get().startswith("CPU") else "cuda", "model_dir": str(USER_DIR / "models"),
                   "api_key": self.api_key_var.get(), "model": self.model_var.get().strip(),
-                  "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": self.force_var.get(), "mode": mode}
+                  "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": self.force_var.get(), "mode": effective_mode}
         self.diagnostics.start_task(config)
         self.launch_job(config)
         self.force_var.set(False)
@@ -777,6 +779,36 @@ class Application(tk.Tk):
         self.active_stage = ""
         self.last_job_ok = False
         self.start_process(worker, config)
+
+    def confirm_translate_after_asr(self):
+        """首阶段（仅识别）完成后，按真实原文弹费用硬确认，确认后才翻译。"""
+        try:
+            if not self.project or not self.project.get("recognition_complete"):
+                raise UserError("识别结果不可用，请重试。")
+            from core import estimate_cost
+            n, tin, tout, cost = estimate_cost(self.project["cues"], self.model_var.get().strip(), False)
+            if not n:
+                self.log("原文已全部识别，没有需要翻译的条目。")
+                return
+            if not messagebox.askyesno("翻译费用预估", f"本地识别已完成。本次将翻译约 {n} 条字幕，预计调用约 {tin:,} 输入 + {tout:,} 输出 tokens，\n按官方单价估算约 ¥{cost:.2f}。实际费用以 DeepSeek 官方账单为准。\n\n必须确认后才会开始翻译。是否继续？"):
+                self.log("已取消翻译；原文已保存，可稍后打开项目继续。")
+                return
+            if not self.api_key_var.get().strip():
+                messagebox.showinfo("填写密钥", "请在「翻译与识别设置」填写 DeepSeek API 密钥，或打开项目后继续。")
+                self.notebook.select(1)
+                self.key_entry.focus_set()
+                return
+            self.persist_api_key()
+            local = self.local_model_var.get().strip()
+            config = {"input": self.source_var.get(), "project_path": self.project_path, "output": self.out_var.get(),
+                      "asr_model": local or self.asr_var.get(), "language": {"英语": "en", "日语": "ja"}.get(self.lang_var.get(), ""),
+                      "device": "cpu" if self.device_var.get().startswith("CPU") else "cuda", "model_dir": str(USER_DIR / "models"),
+                      "api_key": self.api_key_var.get(), "model": self.model_var.get().strip(),
+                      "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": False, "mode": "translate"}
+            self.diagnostics.start_task(config)
+            self.launch_job(config)
+        except (UserError, OSError) as exc:
+            self.log(str(exc))
 
     def start_gpu_setup(self):
         if self.busy:
@@ -864,6 +896,7 @@ class Application(tk.Tk):
                 elif kind in ("error", "cancelled"):
                     self.seen_terminal = True
                     self.last_job_ok = False
+                    self.pending_translate = False
                     self.status_var.set(value)
                     self.log(value)
                     if kind == "cancelled" and self.in_queue:
@@ -913,6 +946,9 @@ class Application(tk.Tk):
                         self.reload_project(self.project_path)
                     except UserError:
                         pass
+                if self.pending_translate and self.task_kind == "job" and self.last_job_ok:
+                    self.pending_translate = False
+                    self.after(60, self.confirm_translate_after_asr)
                 if self.in_queue and self.task_kind == "job" and self.seen_terminal:
                     if self.last_job_ok:
                         self.queue_ok += 1
@@ -1016,7 +1052,20 @@ class Application(tk.Tk):
         except OSError:
             messagebox.showinfo("输出位置", str(folder))
 
+    def persist_api_key(self):
+        """按勾选状态保存或清除本机密钥；返回是否成功。"""
+        try:
+            from winsecret import forget_key, save_key
+            if self.remember_var.get() and self.api_key_var.get().strip():
+                save_key(self.api_key_var.get().strip())
+            else:
+                forget_key()
+            return True
+        except Exception:
+            return False
+
     def close_app(self):
+        self.persist_api_key()
         if self.busy:
             if messagebox.askyesno("任务正在运行", "停止当前任务并退出？已完成的翻译批次会保留。"):
                 self.save_settings()

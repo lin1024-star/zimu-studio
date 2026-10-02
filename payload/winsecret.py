@@ -20,6 +20,11 @@ class _DATA_BLOB(ctypes.Structure):
     _fields_ = [("cbData", ctypes.c_uint32), ("pbData", ctypes.c_void_p)]
 
 
+_kernel32 = ctypes.windll.kernel32
+_kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+_kernel32.LocalFree.restype = ctypes.c_void_p
+
+
 def _blob(data):
     buf = ctypes.create_string_buffer(data)
     return _DATA_BLOB(len(data), ctypes.cast(buf, ctypes.c_void_p))
@@ -30,7 +35,7 @@ def _unblob(blob):
 
 
 def _free(blob):
-    ctypes.windll.kernel32.LocalFree(blob.pbData)
+    _kernel32.LocalFree(blob.pbData)
 
 
 def protect(text_bytes):
