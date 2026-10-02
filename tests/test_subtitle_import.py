@@ -38,7 +38,7 @@ class ImportTests(unittest.TestCase):
         path = store_imported_project(project, self.root / "output")
         self.assertEqual(load_project(path)["cues"], project["cues"])
         files = export_files(path, project)
-        self.assertEqual(len(files), 6)
+        self.assertEqual(len(files), 7)
         self.assertEqual(read_srt(files[2])[0].source, "你好。")
 
     def test_mismatched_times_or_extra_cues_rejected_before_creating_project(self):
@@ -68,7 +68,7 @@ class ImportTests(unittest.TestCase):
         with patch("core.DeepSeekClient", side_effect=AssertionError("API forbidden")), patch("core.transcribe", side_effect=AssertionError("ASR forbidden")):
             run_job(cfg, self.stop, lambda k, v: events.append((k, v)))
         done = next(v for k, v in events if k == "done")
-        self.assertEqual(len(done["files"]), 2)
+        self.assertEqual(len(done["files"]), 3)
         self.assertTrue(all("_中文_zh." in f for f in done["files"]))
         self.assertEqual(load_project(path)["subtitle_mode"], "chinese")
 

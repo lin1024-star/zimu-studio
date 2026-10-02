@@ -77,7 +77,7 @@ class DurationTests(unittest.TestCase):
                 files = export_files(path, updated)
             self.assertEqual(load_project(backup)["cues"], original["cues"])
             self.assertEqual(load_project(path)["cues"][2]["end"], 5.5)
-            self.assertEqual(len(files), 6)
+            self.assertEqual(len(files), 7)
             times = [[(c.start, c.end) for c in read_srt(files[i])] for i in (0, 2, 4)]
             self.assertEqual(times[0], times[1])
             self.assertEqual(times[1], times[2])

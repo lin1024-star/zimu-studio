@@ -34,7 +34,7 @@ HELP = """快速使用
 3. 选择原视频语言。英语或日语最好手动指定；未知时可以自动识别。
 4. 首次建议点击「仅识别原文」。完成后点选字幕条目，在下方校对原文、人名和术语，点击「保存此条修改」。
 5. 点击「识别并翻译 / 继续」。已有原文不会重复识别；缺少的中文会通过 DeepSeek API 翻译。
-6. 完成后自动导出六份文件：原文、中文、混合版各一份 SRT 和 TXT。混合版原文在上、中文在下，逐条对应。点击「打开输出文件夹」。
+6. 完成后自动导出七份文件：原文、中文、混合版各一份 SRT 和 TXT，以及一份中文 ASS（可在设置里导入自己的 .ass 样式模板）。混合版原文在上、中文在下，逐条对应。点击「打开输出文件夹」。
 7. 点击「新增字幕…」，填写开始、结束时间和原文，也可手填中文。保存后自动按时间插入；继续翻译只补译中文为空的条目。
 8. 只有中文字幕时，可直接修改左侧正文并导出中文 SRT / TXT 两份。要生成原文和混合版，还需要对应原文。
 9. 只有需要翻译缺失条目时才填写 DeepSeek API 密钥。默认只在本次运行内使用，关闭后清除；勾选「记住密钥」时用 Windows 账户级加密保存在本机（仅当前系统用户可解），仍不放进项目或导出文件。
@@ -150,6 +150,8 @@ class Application(tk.Tk):
         self.api_key_var = tk.StringVar(value=os.environ.get("DEEPSEEK_API_KEY", "") or remembered_key)
         self.remember_var = tk.BooleanVar(value=bool(remembered_key))
         self.model_var = tk.StringVar(value=self.settings.get("model", DEFAULT_MODEL))
+        self.ass_style_var = tk.StringVar(value=self.settings.get("ass_style_file", ""))
+        self.ass_style_name_var = tk.StringVar(value=self.settings.get("ass_style_name", "Default"))
         self.force_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="选择视频，或打开已有项目 / SRT 直接校对。")
         self.summary_var = tk.StringVar(value="尚未载入字幕")
@@ -174,7 +176,8 @@ class Application(tk.Tk):
         data = {"output": self.out_var.get(), "language": self.lang_var.get(),
                 "asr_model": self.asr_var.get(), "device": self.device_var.get(),
                 "local_model": self.local_model_var.get(), "model": self.model_var.get(),
-                "glossary": self.glossary.get("1.0", "end-1c")}
+                "glossary": self.glossary.get("1.0", "end-1c"),
+                "ass_style_file": self.ass_style_var.get(), "ass_style_name": self.ass_style_name_var.get()}
         try:
             atomic_write(CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
         except OSError:
@@ -281,7 +284,7 @@ class Application(tk.Tk):
         self.button(action, "仅识别原文", lambda: self.start_job("transcribe"), side="left", padx=8)
         self.stop_button = self.button(action, "停止", self.stop_job, busy=False, side="left")
         self.stop_button.configure(state="disabled")
-        self.full_export_button = self.button(action, "导出六份文件", lambda: self.manual_export(True), side="right")
+        self.full_export_button = self.button(action, "导出七份文件", lambda: self.manual_export(True), side="right")
         self.source_export_button = self.button(action, "仅导出原文", lambda: self.manual_export(False), side="right", padx=8)
         self.progress = ttk.Progressbar(main, mode="determinate", maximum=100)
         self.progress.grid(row=3, column=0, sticky="ew", pady=(0, 6))
@@ -373,6 +376,19 @@ class Application(tk.Tk):
         btn.grid(row=13, column=2, padx=10)
         self.busy_controls.extend([entry, btn])
         ttk.Label(settings, text="可留空。填写时优先使用该文件夹，应包含 model.bin、config.json、tokenizer.json 等模型文件。", style="Muted.TLabel").grid(row=14, column=1, columnspan=2, sticky="w")
+        ttk.Separator(settings).grid(row=15, column=0, columnspan=3, sticky="ew", pady=14)
+        ttk.Label(settings, text="ASS 导出样式（可选）", font=(FONT_FAMILY, 15, "bold")).grid(row=16, column=0, columnspan=3, sticky="w", pady=(2, 10))
+        ttk.Label(settings, text="样式文件").grid(row=17, column=0, sticky="w", pady=6, padx=(0, 18))
+        ass_entry = ttk.Entry(settings, textvariable=self.ass_style_var)
+        ass_entry.grid(row=17, column=1, sticky="ew", pady=6)
+        ttk.Button(settings, text="选择…", command=self.choose_ass_style).grid(row=17, column=2, padx=(12, 0))
+        self.busy_controls.append(ass_entry)
+        ttk.Label(settings, text="样式名").grid(row=18, column=0, sticky="w", pady=6, padx=(0, 18))
+        self.ass_style_combo = ttk.Combobox(settings, textvariable=self.ass_style_name_var, state="readonly", width=28)
+        self.ass_style_combo.grid(row=18, column=1, sticky="w", pady=6)
+        self.busy_controls.append(self.ass_style_combo)
+        self.refresh_ass_styles()
+        ttk.Label(settings, text="导入 .ass 模板即可使用其字体/颜色/位置；留空用内置默认样式（白字黑边）。导出含中文时自动生成“中文_zh.ass”。", style="Muted.TLabel").grid(row=19, column=1, columnspan=2, sticky="w", pady=6)
         gpu_btn = ttk.Button(settings, text="启用显卡加速", command=self.start_gpu_setup, style="Accent.TButton")
         gpu_btn.grid(row=11, column=2, padx=10, pady=6)
         self.busy_controls.append(gpu_btn)
@@ -453,6 +469,38 @@ class Application(tk.Tk):
         self.queue_files = []
         self.refresh_queue_list()
         self.log("队列已清空。")
+
+    def refresh_ass_styles(self):
+        names = ["Default"]
+        path = self.ass_style_var.get().strip()
+        if path and Path(path).is_file():
+            try:
+                from core import parse_ass_template
+                parts = parse_ass_template(Path(path).read_text(encoding="utf-8-sig", errors="replace"))
+                if parts and parts[2]:
+                    names = list(parts[2].keys())
+            except (OSError, ValueError):
+                pass
+        self.ass_style_combo.configure(values=names)
+        if self.ass_style_name_var.get() not in names:
+            self.ass_style_name_var.set(names[0])
+
+    def choose_ass_style(self):
+        path = filedialog.askopenfilename(title="选择 ASS 样式模板（可选）", filetypes=[("ASS 字幕样式", "*.ass"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            from core import parse_ass_template
+            parts = parse_ass_template(Path(path).read_text(encoding="utf-8-sig", errors="replace"))
+            if not parts or not parts[2]:
+                messagebox.showerror("样式模板", "这个文件里没有可用的 [V4+ Styles] 样式，请换一个 .ass 模板。")
+                return
+        except (OSError, ValueError):
+            messagebox.showerror("样式模板", "无法读取该文件。")
+            return
+        self.ass_style_var.set(path)
+        self.refresh_ass_styles()
+        self.log(f"已导入 ASS 样式模板：{Path(path).name}，可选样式 {len(parts[2])} 个。")
 
     def choose_source(self):
         path = filedialog.askopenfilename(title="选择视频、音频或已有 SRT", filetypes=[
@@ -768,7 +816,8 @@ class Application(tk.Tk):
                   "asr_model": local or self.asr_var.get(), "language": {"英语": "en", "日语": "ja"}.get(self.lang_var.get(), ""),
                   "device": "cpu" if self.device_var.get().startswith("CPU") else "cuda", "model_dir": str(USER_DIR / "models"),
                   "api_key": self.api_key_var.get(), "model": self.model_var.get().strip(),
-                  "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": self.force_var.get(), "mode": effective_mode}
+                  "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": self.force_var.get(), "mode": effective_mode,
+                  "ass_style_file": self.ass_style_var.get().strip() or None, "ass_style_name": self.ass_style_name_var.get()}
         self.diagnostics.start_task(config)
         self.launch_job(config)
         self.force_var.set(False)
@@ -984,7 +1033,8 @@ class Application(tk.Tk):
             self.diagnostics.start_task({"mode": "manual_export", "device": "not_used"})
             self.diagnostics.record("media_info", actual_device="not_used")
             self.diagnostics.record("phase", phase="export")
-            files = export_files(self.project_path, self.project, include_zh)
+            files = export_files(self.project_path, self.project, include_zh,
+                                 self.ass_style_var.get().strip() or None, self.ass_style_name_var.get())
             self.diagnostics.record("exported", phase="completed", export_count=len(files))
             self.status_var.set(f"已导出 {len(files)} 份独立文件。")
             self.log("导出位置：" + str(files[0].parent))

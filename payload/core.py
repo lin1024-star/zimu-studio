@@ -357,7 +357,99 @@ def format_srt(cues, translated=False, language="en", *, bilingual=False):
     return "\n".join(blocks) + ("\n" if blocks else "")
 
 
-def export_files(project_path, project, include_zh=True):
+# ASS 导出（纯本地文本转换，不调用任何 API）
+ASS_DEFAULT_SCRIPT_INFO = """Title: SubtitleStudio
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.709
+PlayResX: 1920
+PlayResY: 1080"""
+
+ASS_DEFAULT_STYLE = "Style: Default,Microsoft YaHei UI,56,&H00FFFFFF,&H000000FF,&H00000000,&H00737375,0,0,0,0,100,100,0,0,1,2,2,2,30,30,30,1"
+
+ASS_EVENTS_FORMAT = "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
+
+
+def parse_ass_template(text):
+    """解析 ASS 模板，返回 (script_info 行列表, Styles 的 Format 行, 样式名->Style 行) 或 None。"""
+    script_info = []
+    style_format = None
+    styles = {}
+    section = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped.lower()
+            continue
+        if section == "[script info]":
+            if stripped and not stripped.startswith(";"):
+                script_info.append(stripped)
+        elif section == "[v4+ styles]":
+            if stripped.startswith("Format:"):
+                style_format = stripped
+            elif stripped.startswith("Style:"):
+                name = stripped.split(",", 1)[0].split(":", 1)[1].strip()
+                styles[name] = stripped
+    if not styles or style_format is None:
+        return None
+    return (script_info, style_format, styles)
+
+
+def ass_time(seconds):
+    """ASS 时间格式 h:mm:ss.cc（厘秒）。"""
+    centis = max(0, round(seconds * 100))
+    h, rem = divmod(centis, 360000)
+    m, rem = divmod(rem, 6000)
+    s, cs = divmod(rem, 100)
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def ass_escape(text):
+    text = text.replace("\\", "\\\\")
+    text = text.replace("{", "\\{").replace("}", "\\}")
+    return text.replace("\n", "\\N")
+
+
+def format_ass(cues, style_name="Default", style_text=None, language="zh"):
+    """生成 ASS 全文；样式来自模板（style_text）或内置默认。中文模式下只导出中文。"""
+    parts = parse_ass_template(style_text) if style_text else None
+    if parts:
+        script_info, style_format, styles = parts
+    else:
+        script_info = ASS_DEFAULT_SCRIPT_INFO.splitlines()
+        style_format = "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
+        styles = {"Default": ASS_DEFAULT_STYLE}
+    if style_name not in styles:
+        style_name = "Default" if "Default" in styles else next(iter(styles))
+    head = "\n".join(script_info) + "\n\n[V4+ Styles]\n" + style_format + "\n" + styles[style_name] + "\n\n[Events]\n" + ASS_EVENTS_FORMAT
+    rows = []
+    for c in cues:
+        text = clean(_cue_field(c, "zh" if language == "zh" else "source"))
+        if not text:
+            continue
+        rows.append(f"Dialogue: 0,{ass_time(_cue_time(c, 'start'))},{ass_time(_cue_time(c, 'end'))},{style_name},,0,0,0,,{ass_escape(text)}")
+    return head + "\n" + "\n".join(rows) + "\n"
+
+
+def _export_blocked(exc):
+    """把导出时的权限错误翻译成可操作的提示。"""
+    winerror = getattr(exc, "winerror", None)
+    errno = getattr(exc, "errno", None)
+    if winerror == 5 or errno in (1, 13):
+        return UserError(
+            "导出被拒绝访问（WinError 5）：写入输出目录被系统或安全软件拦住。\n"
+            "常见原因：360 等安全软件的“文档保护 / 反勒索”保护了 文档、视频、桌面 等文件夹，\n"
+            "只拦截本程序写入（受信任的程序不受影响）。\n"
+            "处理办法（任选其一）：\n"
+            "1）把软件目录加入安全软件信任区；\n"
+            "2）关闭安全软件的“文档保护 / 反勒索服务”；\n"
+            "3）在设置里把“输出目录”改到 D 盘等其他位置后重试。\n"
+            "已识别的原文和译文都已保存，不受影响。")
+    return UserError(f"导出失败：{exc}")
+
+
+def export_files(project_path, project, include_zh=True, ass_style_file=None, ass_style_name=None):
     cues = [Cue(**v) for v in project["cues"]]
     if not cues:
         raise UserError("还没有字幕，请先识别或导入 SRT。")
@@ -376,7 +468,17 @@ def export_files(project_path, project, include_zh=True):
     while out.exists():
         out = out_root / f"{stamp}_{n}"
         n += 1
-    out.mkdir(parents=True)
+    try:
+        out.mkdir(parents=True)
+    except OSError as exc:
+        raise _export_blocked(exc) from exc
+
+    def save(path, text):
+        try:
+            atomic_write(path, text, encoding="utf-8-sig")
+        except OSError as exc:
+            raise _export_blocked(exc) from exc
+
     name = safe_name(project.get("name", "video"))
     lang = project.get("language", "original")
     files = []
@@ -384,16 +486,26 @@ def export_files(project_path, project, include_zh=True):
         suffix = "中文_zh" if translated else f"原文_{safe_name(lang)}"
         srt = out / f"{name}_{suffix}.srt"
         txt = out / f"{name}_{suffix}.txt"
-        atomic_write(srt, format_srt(cues, translated, lang), encoding="utf-8-sig")
-        atomic_write(txt, "\n".join(clean(c.zh if translated else c.source) for c in cues) + "\n", encoding="utf-8-sig")
+        save(srt, format_srt(cues, translated, lang))
+        save(txt, "\n".join(clean(c.zh if translated else c.source) for c in cues) + "\n")
         files.extend([srt, txt])
     if include_zh and not chinese_only:
         suffix = f"混合_{safe_name(lang)}_zh"
         srt = out / f"{name}_{suffix}.srt"
         txt = out / f"{name}_{suffix}.txt"
-        atomic_write(srt, format_srt(cues, language=lang, bilingual=True), encoding="utf-8-sig")
-        atomic_write(txt, "\n\n".join(clean(c.source) + "\n" + clean(c.zh) for c in cues) + "\n", encoding="utf-8-sig")
+        save(srt, format_srt(cues, language=lang, bilingual=True))
+        save(txt, "\n\n".join(clean(c.source) + "\n" + clean(c.zh) for c in cues) + "\n")
         files.extend([srt, txt])
+    if include_zh:
+        style_text = None
+        if ass_style_file:
+            try:
+                style_text = Path(ass_style_file).read_text(encoding="utf-8-sig", errors="replace")
+            except OSError:
+                style_text = None  # 模板不可读时退回内置默认样式
+        ass = out / f"{name}_中文_zh.ass"
+        save(ass, format_ass(cues, ass_style_name or "Default", style_text))
+        files.append(ass)
     project["last_export"] = str(out.resolve())
     save_project(project_path, project)
     return files
@@ -740,6 +852,10 @@ def _cue_field(cue, field):
     return cue.get(field, "") if isinstance(cue, dict) else getattr(cue, field, "")
 
 
+def _cue_time(cue, field):
+    return float(cue.get(field, 0) if isinstance(cue, dict) else getattr(cue, field, 0))
+
+
 def estimate_tokens(text):
     zh = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
     jp = sum(1 for ch in text if "\u3040" <= ch <= "\u30ff")
@@ -808,7 +924,8 @@ def run_job(config, stop, emit):
                           stop, emit, force=config.get("force", False))
         check_cancel(stop)
         emit("phase", "export")
-        files = export_files(project_path, project, include_zh=True)
+        files = export_files(project_path, project, include_zh=True,
+                             ass_style_file=config.get("ass_style_file"), ass_style_name=config.get("ass_style_name"))
     emit("project", str(project_path))
     emit("progress", 100)
     emit("done", {"project": str(project_path), "folder": str(files[0].parent), "files": [str(p) for p in files]})

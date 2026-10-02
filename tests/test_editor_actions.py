@@ -52,8 +52,9 @@ class Controller:
         self.queue_mode, self.queue_index, self.queue_ok, self.queue_fail = "", 0, 0, 0
         self.last_job_ok = False
         self.pending_translate = False
-        for name in ("source_var", "out_var", "lang_var", "status_var", "summary_var", "time_start", "time_end", "api_key_var", "model_var", "local_model_var"):
+        for name in ("source_var", "out_var", "lang_var", "status_var", "summary_var", "time_start", "time_end", "api_key_var", "model_var", "local_model_var", "ass_style_var"):
             setattr(self, name, Value())
+        self.ass_style_name_var = Value("Default")
         self.force_var = Value(False)
         for name in ("source_text", "zh_text", "source_label", "zh_label", "full_export_button", "source_export_button", "glossary", "key_entry"):
             setattr(self, name, Widget())
@@ -120,7 +121,7 @@ class EditorActions(unittest.TestCase):
         a.api_key_var.set("")
         with patch.object(a, "launch_job", side_effect=AssertionError("No worker for completed work")), patch("core.DeepSeekClient", side_effect=AssertionError("No paid request")):
             a.start_job("translate")
-        self.assertEqual(len(list(Path(a.project["last_export"]).iterdir())), 6)
+        self.assertEqual(len(list(Path(a.project["last_export"]).iterdir())), 7)
         self.assertIsNone(a.proc)
 
     def test_srt_file_entry_imports_and_saves_without_worker_then_chinese_edit(self):
@@ -137,7 +138,7 @@ class EditorActions(unittest.TestCase):
         a.force_var.set(True)
         with patch("core.DeepSeekClient", side_effect=AssertionError("No paid request")):
             a.start_job("translate")
-        self.assertEqual(len(list(Path(a.project["last_export"]).iterdir())), 2)
+        self.assertEqual(len(list(Path(a.project["last_export"]).iterdir())), 3)
         self.assertEqual(load_project(a.project_path)["cues"][0]["zh"], "校对后的中文。")
         a.reload_project(a.project_path)
         self.assertEqual(a.source_text.value, "校对后的中文。")

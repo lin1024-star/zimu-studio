@@ -38,12 +38,12 @@ class CoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_six_exports_preserve_single_language_and_share_timing(self):
+    def test_seven_exports_preserve_single_language_and_share_timing(self):
         p = make_project()
         for row in p["cues"]:
             row["zh"] = "这是对应的中文译文。"
         files = export_files(self.path, p)
-        self.assertEqual(len(files), 6)
+        self.assertEqual(len(files), 7)
         original, chinese, bilingual = (read_srt(files[i]) for i in (0, 2, 4))
         self.assertEqual([(c.start, c.end) for c in original], [(c.start, c.end) for c in chinese])
         self.assertEqual([(c.start, c.end) for c in original], [(c.start, c.end) for c in bilingual])
@@ -91,7 +91,7 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual("".join(lines[2:split]).replace(" ", ""), source.replace(" ", ""))
                 self.assertEqual("".join(lines[split:]), chinese)
 
-    def test_existing_complete_project_exports_six_without_asr_or_api(self):
+    def test_existing_complete_project_exports_seven_without_asr_or_api(self):
         p = make_project(2)
         for row in p["cues"]:
             row["zh"] = "已经翻译好的内容。"
@@ -103,7 +103,8 @@ class CoreTests(unittest.TestCase):
              patch("core.DeepSeekClient", side_effect=AssertionError("Must not call API")):
             run_job(cfg, self.stop, lambda k, v: events.append((k, v)))
         done = next(v for k, v in events if k == "done")
-        self.assertEqual(len(done["files"]), 6)
+        self.assertEqual(len(done["files"]), 7)
+        self.assertTrue(any(str(f).endswith("_中文_zh.ass") for f in done["files"]))
         self.assertEqual(load_project(self.path)["cues"], p["cues"])
 
     def test_incomplete_translation_cannot_masquerade_as_complete(self):
@@ -153,6 +154,65 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(n2, 2)
         self.assertGreater(tin2, tin)
         self.assertGreater(cost2, cost)
+
+    def test_ass_format_uses_template_styles_and_times(self):
+        from core import format_ass, parse_ass_template
+        template = """[Script Info]
+PlayResX: 1920
+PlayResY: 1080
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Demo,SimSun,50,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,30,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+        parts = parse_ass_template(template)
+        self.assertIsNotNone(parts)
+        self.assertIn("Demo", parts[2])
+        cues = [asdict(Cue(1, 1.25, 2.0, "Original text", "中文译文"))]
+        text = format_ass(cues, "Demo", template)
+        self.assertIn("Style: Demo", text)
+        self.assertIn("PlayResX: 1920", text)
+        self.assertIn("Dialogue: 0,0:00:01.25,0:00:02.00,Demo", text)
+        self.assertIn("中文译文", text)
+        self.assertNotIn("Original text", text)
+
+    def test_ass_format_falls_back_to_default_style(self):
+        from core import format_ass
+        cues = [asdict(Cue(1, 0.0, 1.0, "src", "中文"))]
+        text = format_ass(cues, "Missing", None)
+        self.assertIn("Style: Default", text)
+        self.assertIn("[Events]", text)
+
+    def test_ass_format_escapes_braces(self):
+        from core import format_ass
+        cues = [asdict(Cue(1, 0.0, 1.0, "src", "带{花括号}的中文"))]
+        text = format_ass(cues, "Default", None)
+        self.assertIn("带\\{花括号\\}的中文", text)
+
+    def test_export_files_writes_chinese_ass(self):
+        p = make_project(2)
+        for row in p["cues"]:
+            row["zh"] = "已经翻译好的内容。"
+        save_project(self.path, p)
+        files = export_files(self.path, p)
+        self.assertEqual(len(files), 7)
+        ass = next(f for f in files if str(f).endswith(".ass"))
+        content = Path(ass).read_text(encoding="utf-8-sig")
+        self.assertIn("[Events]", content)
+        self.assertIn("已经翻译好的内容。", content)
+
+    def test_export_reports_blocked_write_with_actionable_message(self):
+        p = make_project(2)
+        for row in p["cues"]:
+            row["zh"] = "已经翻译好的内容。"
+        save_project(self.path, p)
+        with patch("core.atomic_write", side_effect=PermissionError(13, "拒绝访问")):
+            with self.assertRaises(UserError) as ctx:
+                export_files(self.path, p)
+        self.assertIn("信任区", str(ctx.exception))
 
     def test_broken_srt_is_rejected_instead_of_dropping_cues(self):
         p = self.root / "bad.srt"
