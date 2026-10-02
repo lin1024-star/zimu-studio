@@ -9,3 +9,4 @@ dist/
 build/
 .vs/
 *.user
+.tmp-tests/
