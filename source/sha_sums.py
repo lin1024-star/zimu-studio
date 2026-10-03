@@ -1,15 +1,46 @@
+"""生成 SHA256SUMS.txt 校验清单。
+
+哈希取自「git 仓库里的字节」（git blob），而不是工作区文件：
+
+Windows 上 core.autocrlf=true 会把工作区文件转成 CRLF，而 git archive 与
+GitHub 的 Code ZIP 导出的都是仓库里的 LF 字节。若按工作区计算，下载发布包
+的人校验会大面积失败；基于 blob 计算才能与发布包逐字节一致。
+
+同时只统计 git 跟踪的文件，避免把 debug.log 之类的临时文件写进清单
+（那会让校验时报“缺失”）。
+"""
 import hashlib
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUDE = {"SHA256SUMS.txt", ".gitignore"}
-IGNORE_PARTS = {"__pycache__", ".tmp-tests", ".git"}
-lines = []
-for p in sorted(ROOT.rglob("*")):
-    if not p.is_file() or p.name in EXCLUDE or p.suffix == ".pyc" or (IGNORE_PARTS & set(p.parts)):
-        continue
-    rel = p.relative_to(ROOT).as_posix()
-    digest = hashlib.sha256(p.read_bytes()).hexdigest()
-    lines.append(f"{digest}  {rel}")
-(ROOT / "SHA256SUMS.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-print(f"generated {len(lines)} checksums")
+EXCLUDE_NAMES = {"SHA256SUMS.txt"}
+
+
+def git(*args):
+    result = subprocess.run(["git"] + list(args), cwd=ROOT, capture_output=True)
+    if result.returncode != 0:
+        message = result.stderr.decode("utf-8", "replace").strip()
+        sys.exit("git " + " ".join(args) + " 失败：" + message)
+    return result.stdout
+
+
+def main():
+    tracked = [name for name in git("ls-files", "-z").decode("utf-8").split("\0") if name]
+    if not tracked:
+        sys.exit("git 仓库里没有已跟踪的文件，请在带 git 的检出环境中运行本脚本。")
+    lines = []
+    for relative in sorted(tracked):
+        if Path(relative).name in EXCLUDE_NAMES:
+            continue
+        blob = git("cat-file", "blob", "HEAD:" + relative)
+        lines.append(hashlib.sha256(blob).hexdigest() + "  " + relative)
+    (ROOT / "SHA256SUMS.txt").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8", newline="\n"
+    )
+    print("generated %d checksums" % len(lines))
+
+
+if __name__ == "__main__":
+    main()
