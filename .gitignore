@@ -10,3 +10,24 @@ build/
 .vs/
 *.user
 .tmp-tests/
+
+# ---- 密钥与敏感信息（绝对不能进仓库）----
+.env
+.env.*
+*.token
+*.key
+*.pem
+api_key.dpapi
+gh_token.txt
+
+# ---- 大文件与二进制（走 Releases 分发；根目录仅保留最新一份安装器给小白）----
+*.exe
+!字幕工坊_安装与启动.exe
+*.zip
+*.7z
+*.rar
+*.whl
+*.bin
+*.pt
+*.safetensors
+*.onnx

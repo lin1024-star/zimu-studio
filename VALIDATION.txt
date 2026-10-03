@@ -4,7 +4,7 @@
 已完成的检查
 1. 安装器使用微软 .NET Framework 4.5 参考程序集（Microsoft.NETFramework.ReferenceAssemblies.net45 1.0.3）与系统 csc（C# 5）编译，x64 Windows GUI 目标；build.py 代码页参数改为 65001，Windows/Linux 编译器通用。
 2. IL 兼容性审计（String.Split/Trim 重载）：88 个方法体、101 次 String 调用，0 个不兼容调用。因本机 360 安全软件拦截 Assembly.LoadFrom，审计改用内存加载完成。
-3. Python 回归检查 80 项通过（skipped=1 为环境相关旧跳过项）：新增识别参数 ASR_OPTIONS、费用估算、DPAPI 密钥存储（winsecret，模拟加解密）用例；原有 75 项全部保持通过。另修复一项测试在 Windows 的换行符兼容问题（write_text newline=""）。
+3. Python 回归检查 86 项通过（skipped=1 为环境相关旧跳过项）：新增识别参数 ASR_OPTIONS、费用估算、DPAPI 密钥存储（winsecret，模拟加解密）、ASS 模板解析与导出等用例；原有用例全部保持通过。另修复一项测试在 Windows 的换行符兼容问题（write_text newline=""）。
 4. 安装器逻辑检查 23 项通过：新增 3 项国内镜像回退、2 项并行下载（含 3 路并发上限验证）、1 项显卡检测冒烟；原 20 项全部保持通过（Linux 符号链接用例在 Windows 跳过）。
 5. 新增功能验证：
    - 国内镜像：huggingface.co 直连失败时自动切换 hf-mirror.com 重试，SHA-256 校验不变（单元级验证）。
@@ -18,7 +18,7 @@
    - 当前参数（turbo + 宽松 VAD）：5 分钟音频 22 秒完成（约 14 倍速），132 段；13 分钟处连续 12 次人名重复完整捕获，无幻觉。
    - 开启 condition_on_previous_text 的实验配置出现约 30 秒重复幻觉，已否决，保持关闭。
    - large-v3（魔搭 128 梅尔镜像，int8_float16）：5 分钟音频 123 秒（约 2.5 倍速），覆盖略多（+24 秒）但关键片段出现错误（人名重复糊化、专名错字），结论为不推荐，默认维持 turbo。
-7. FAQ 已更新至 114 条（镜像、记住密钥、tiny、批处理队列等），指南与随包 HTML 一致性重新生成。
+7. FAQ 已更新至 120 条（镜像、记住密钥、tiny、批处理队列、ASS 导出等），指南与随包 HTML 一致性重新生成。
 
 验证边界
 - 未在本机完成：安装器界面首次联网全流程（含 UAC VC++ 安装）、桌面快捷方式创建、Tk 主窗口人工点选、批处理队列端到端人工测试、DeepSeek 真实 API 调用。
@@ -27,7 +27,7 @@
 - 费用预估价格表可能随官方调整，最终以 DeepSeek 官方账单为准。
 
 附：本轮测试输出
-python-tests.log: Ran 80 tests, OK (skipped=1)
+python-tests.log: Ran 86 tests, OK (skipped=1)
 installer-tests.log: PASS TOTAL 23
 compatibility-audit.log: Audited 88 method bodies, 101 String calls; incompatible calls=0
 asr-compare.log: turbo 132 段 / 22 秒；large-v3 125 段 / 123 秒；结论维持 turbo。
