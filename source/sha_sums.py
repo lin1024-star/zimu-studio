@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXCLUDE = {"SHA256SUMS.txt", ".gitignore"}
-IGNORE_PARTS = {"__pycache__", ".tmp-tests"}
+IGNORE_PARTS = {"__pycache__", ".tmp-tests", ".git"}
 lines = []
 for p in sorted(ROOT.rglob("*")):
     if not p.is_file() or p.name in EXCLUDE or p.suffix == ".pyc" or (IGNORE_PARTS & set(p.parts)):
