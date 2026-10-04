@@ -10,10 +10,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "payload"))
-from core import (Cancelled, Cue, DeepSeekClient, ResponseError, UserError, clean,
-                  cues_from_segments, export_files, fingerprint, format_srt,
-                  load_project, read_srt, run_job, save_project, timestamp,
-                  translate_project, validate_translation, worker)
+from core import (Cancelled, Cue, DEFAULT_EXPORT_KEYS, DeepSeekClient, ResponseError, UserError,
+                  clean, cues_from_segments, default_export_keys, default_export_selection,
+                  export_blank, export_choices, export_files, fingerprint, format_blank_ass,
+                  format_blank_srt, format_srt, load_project, read_srt, run_job, save_project,
+                  timestamp, translate_project, validate_translation, worker)
 
 
 def make_project(n=4):
@@ -446,6 +447,88 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             worker({},self.stop,SimpleNamespace(put=lambda item: captured.append(item)))
         message=[v for k,v in captured if k=="error"][0]
         self.assertIn("处理失败（RuntimeError）",message)
+
+    def test_blank_srt_keeps_exact_timeline_and_carries_no_text(self):
+        p=make_project(3)                       # zh 全空，空轴本来就在翻译之前用
+        save_project(self.path,p)
+        files=export_blank(self.path,p)
+        self.assertEqual(len(files),1)          # 只产出 1 个文件
+        self.assertTrue(str(files[0]).endswith("_空轴.srt"))
+        blank=Path(files[0]).read_text(encoding="utf-8-sig")
+        plain=format_srt([Cue(**r) for r in p["cues"]])
+        times=lambda t:[line for line in t.splitlines() if "-->" in line]
+        self.assertEqual(times(blank),times(plain))     # 时间轴逐条完全一致
+        self.assertEqual(len(times(blank)),3)
+        self.assertNotIn("Original line",blank)          # 正文不写进空轴
+        self.assertIn("1\n",blank)
+        self.assertIn("3\n",blank)
+
+    def test_blank_ass_keeps_every_empty_cue_and_the_template_style(self):
+        cues=[Cue(1,0,2,"A"),Cue(2,2,4,"B")]
+        template=("[Script Info]\nTitle: 模板\n\n[V4+ Styles]\nFormat: Name, Fontname\n"
+                  "Style: 主字幕,Arial\nStyle: 副字幕,Arial\n\n[Events]\n"
+                  "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text")
+        text=format_blank_ass(cues,"主字幕",template)
+        self.assertIn("Style: 主字幕,Arial",text)
+        self.assertIn("Dialogue: 0,0:00:00.00,0:00:02.00,主字幕,,0,0,0,,",text)
+        self.assertIn("Dialogue: 0,0:00:02.00,0:00:04.00,主字幕,,0,0,0,,",text)
+        self.assertEqual(text.count("Dialogue:"),2)      # 文本为空也不跳过条目
+
+    def test_blank_export_needs_no_translation_but_chinese_export_still_does(self):
+        p=make_project(2)                       # zh 全空
+        save_project(self.path,p)
+        files=export_blank(self.path,p,"ass")
+        self.assertEqual(len(files),1)
+        self.assertTrue(str(files[0]).endswith("_空轴.ass"))
+        with self.assertRaises(UserError):
+            export_files(self.path,p,include={"zh_srt"})
+
+    def test_export_subset_writes_only_the_selected_files(self):
+        p=make_project(2)
+        for row in p["cues"]:
+            row["zh"]="这是译文。"
+        save_project(self.path,p)
+        files=export_files(self.path,p,include={"zh_srt","blank"},blank_format="srt")
+        names=sorted(Path(f).name for f in files)
+        self.assertEqual(len(files),2)
+        self.assertTrue(all(n.endswith("_zh.srt") or n.endswith("_空轴.srt") for n in names),names)
+
+    def test_selecting_nothing_is_rejected_instead_of_exporting_everything(self):
+        p=make_project(2)
+        for row in p["cues"]:
+            row["zh"]="这是译文。"
+        save_project(self.path,p)
+        with self.assertRaises(UserError) as ctx:
+            export_files(self.path,p,include=set())
+        self.assertIn("至少选择一项",str(ctx.exception))
+
+    def test_default_export_is_byte_identical_to_full_explicit_selection(self):
+        # 不传 include 的老调用必须一个字都不变：这是向后兼容的回归保护。
+        p=make_project(2)
+        for row in p["cues"]:
+            row["zh"]="这是对应译文。"
+        save_project(self.path,p)
+        default=export_files(self.path,p)
+        explicit=export_files(self.path,p,include=default_export_keys(True,False))
+        self.assertEqual(len(default),7)
+        self.assertEqual([Path(f).name for f in default],[Path(f).name for f in explicit])
+        for lhs,rhs in zip(default,explicit):
+            self.assertEqual(Path(lhs).read_bytes(),Path(rhs).read_bytes(),Path(lhs).name)
+
+    def test_export_panel_choices_and_defaults_lock_the_agreed_decisions(self):
+        # 使用者确认过的约定：默认全选 = 现有 7 项全勾；空轴不默认勾。
+        normal=[key for key,_ in export_choices(False)]
+        self.assertEqual(normal,["source_srt","source_txt","zh_srt","zh_txt",
+                                 "bilingual_srt","bilingual_txt","zh_ass","blank"])
+        self.assertEqual([key for key,_ in export_choices(True)],["zh_srt","zh_txt","zh_ass","blank"])
+        full=default_export_selection(True,False,True)
+        self.assertEqual(full,set(DEFAULT_EXPORT_KEYS))
+        self.assertEqual(len(full),7)
+        self.assertNotIn("blank",full)
+        # 中文还没译完：中文相关项不默认勾，其余照常
+        self.assertEqual(default_export_selection(True,False,False),{"source_srt","source_txt"})
+        self.assertEqual(default_export_selection(False,False,True),{"source_srt","source_txt"})
+        self.assertEqual(default_export_selection(True,True,True),{"zh_srt","zh_txt","zh_ass"})
 
 
 if __name__ == "__main__":

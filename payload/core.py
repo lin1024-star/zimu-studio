@@ -340,6 +340,11 @@ def wrap_text(text, width):
     return "\n".join(lines)
 
 
+def srt_end_time(cue):
+    """SRT 的结束时间：至少比开始时间晚 1 毫秒，避免零长度字幕。"""
+    return max(round(cue.start * 1000) + 1, round(cue.end * 1000)) / 1000
+
+
 def format_srt(cues, translated=False, language="en", *, bilingual=False):
     blocks = []
     source_width = 22 if language in ("ja", "zh") else 42
@@ -352,8 +357,20 @@ def format_srt(cues, translated=False, language="en", *, bilingual=False):
             body = wrap_text(c.source, source_width) + "\n" + wrap_text(c.zh, 22)
         else:
             body = wrap_text(c.zh if translated else c.source, 22 if translated else source_width)
-        end = max(round(c.start * 1000) + 1, round(c.end * 1000)) / 1000
-        blocks.append(f"{index}\n{timestamp(c.start)} --> {timestamp(end)}\n{body}\n")
+        blocks.append(f"{index}\n{timestamp(c.start)} --> {timestamp(srt_end_time(c))}\n{body}\n")
+    return "\n".join(blocks) + ("\n" if blocks else "")
+
+
+def format_blank_srt(cues):
+    """空轴 SRT：只有序号和时间轴，文本行为空，交给人工翻译。
+
+    时间戳与 format_srt 用同一个 srt_end_time 计算，逐条完全一致；
+    也不受“有没有译文”限制，因为空轴本来就在翻译之前使用。
+    """
+    blocks = []
+    for index, c in enumerate(cues, 1):
+        c.validate()
+        blocks.append(f"{index}\n{timestamp(c.start)} --> {timestamp(srt_end_time(c))}\n\n")
     return "\n".join(blocks) + ("\n" if blocks else "")
 
 
@@ -411,24 +428,47 @@ def ass_escape(text):
     return text.replace("\n", "\\N")
 
 
-def format_ass(cues, style_name="Default", style_text=None, language="zh"):
-    """生成 ASS 全文；样式来自模板（style_text）或内置默认。中文模式下只导出中文。"""
+ASS_STYLE_FORMAT = "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
+
+
+def _ass_head(style_name, style_text):
+    """返回 (ASS 头部文本, 实际使用的样式名)。样式优先取模板，其次内置默认。"""
     parts = parse_ass_template(style_text) if style_text else None
     if parts:
         script_info, style_format, styles = parts
     else:
         script_info = ASS_DEFAULT_SCRIPT_INFO.splitlines()
-        style_format = "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding"
+        style_format = ASS_STYLE_FORMAT
         styles = {"Default": ASS_DEFAULT_STYLE}
     if style_name not in styles:
         style_name = "Default" if "Default" in styles else next(iter(styles))
     head = "\n".join(script_info) + "\n\n[V4+ Styles]\n" + style_format + "\n" + styles[style_name] + "\n\n[Events]\n" + ASS_EVENTS_FORMAT
+    return head, style_name
+
+
+def _ass_dialogue(cue, style_name, text):
+    return f"Dialogue: 0,{ass_time(_cue_time(cue, 'start'))},{ass_time(_cue_time(cue, 'end'))},{style_name},,0,0,0,,{text}"
+
+
+def format_ass(cues, style_name="Default", style_text=None, language="zh"):
+    """生成 ASS 全文；样式来自模板（style_text）或内置默认。中文模式下只导出中文。"""
+    head, style_name = _ass_head(style_name, style_text)
     rows = []
     for c in cues:
         text = clean(_cue_field(c, "zh" if language == "zh" else "source"))
         if not text:
             continue
-        rows.append(f"Dialogue: 0,{ass_time(_cue_time(c, 'start'))},{ass_time(_cue_time(c, 'end'))},{style_name},,0,0,0,,{ass_escape(text)}")
+        rows.append(_ass_dialogue(c, style_name, ass_escape(text)))
+    return head + "\n" + "\n".join(rows) + "\n"
+
+
+def format_blank_ass(cues, style_name="Default", style_text=None):
+    """空轴 ASS：保留模板样式和时间轴，文本留空，交给人工翻译。
+
+    与 format_ass 的区别是不跳过文本为空的条目——空轴本来就没有文本。
+    """
+    head, style_name = _ass_head(style_name, style_text)
+    rows = [_ass_dialogue(c, style_name, "") for c in cues]
     return head + "\n" + "\n".join(rows) + "\n"
 
 
@@ -460,7 +500,49 @@ def _export_blocked(exc):
     return UserError(write_blocked_hint(exc) or f"导出失败：{exc}")
 
 
-def export_files(project_path, project, include_zh=True, ass_style_file=None, ass_style_name=None):
+# 可导出的项目：键 → 给使用者看的名字。默认全选前 7 项；空轴不默认勾（见导出手册约定）。
+EXPORT_ITEMS = (
+    ("source_srt", "原文 SRT"),
+    ("source_txt", "原文 TXT"),
+    ("zh_srt", "中文 SRT"),
+    ("zh_txt", "中文 TXT"),
+    ("bilingual_srt", "混合 SRT（原文在上）"),
+    ("bilingual_txt", "混合 TXT"),
+    ("zh_ass", "中文 ASS（带样式）"),
+    ("blank", "空轴（只有时间轴，交给人工翻译）"),
+)
+EXPORT_LABELS = dict(EXPORT_ITEMS)
+DEFAULT_EXPORT_KEYS = tuple(key for key, _ in EXPORT_ITEMS if key != "blank")
+CHINESE_ONLY_KEYS = ("zh_srt", "zh_txt", "zh_ass")
+SOURCE_ONLY_KEYS = ("source_srt", "source_txt")
+# 这些项含中文正文，缺译文时必须先补译；空轴不含正文，所以不受此限制。
+ZH_KEYS = frozenset({"zh_srt", "zh_txt", "bilingual_srt", "bilingual_txt", "zh_ass"})
+
+
+def default_export_keys(include_zh=True, chinese_only=False):
+    """不传 include 时的默认导出集合，与历史行为逐项一致。"""
+    if chinese_only:
+        return set(CHINESE_ONLY_KEYS) if include_zh else {"zh_srt", "zh_txt"}
+    return set(DEFAULT_EXPORT_KEYS) if include_zh else set(SOURCE_ONLY_KEYS)
+
+
+def export_choices(chinese_only=False):
+    """勾选面板里列出哪些项（键, 名字）。中文模式只有中文相关项可用。"""
+    keys = (list(CHINESE_ONLY_KEYS) + ["blank"]) if chinese_only else [key for key, _ in EXPORT_ITEMS]
+    return [(key, EXPORT_LABELS[key]) for key in keys]
+
+
+def default_export_selection(include_zh=True, chinese_only=False, translated=True):
+    """勾选面板打开时默认勾哪些。
+
+    约定（使用者确认）：默认全选 = 现有 7 项全勾；空轴不默认勾。
+    中文还没译完时，中文相关项不默认勾，避免一打开就是必然失败的组合。
+    """
+    return {key for key in default_export_keys(include_zh, chinese_only) if translated or key not in ZH_KEYS}
+
+
+def export_files(project_path, project, include_zh=True, ass_style_file=None, ass_style_name=None,
+                 include=None, blank_format="srt"):
     cues = [Cue(**v) for v in project["cues"]]
     if not cues:
         raise UserError("还没有字幕，请先识别或导入 SRT。")
@@ -470,7 +552,13 @@ def export_files(project_path, project, include_zh=True, ass_style_file=None, as
     if chinese_only:
         for c in cues:
             c.zh = c.source
-    if include_zh and any(not clean(c.zh) for c in cues):
+    if include is None:
+        wanted = default_export_keys(include_zh, chinese_only)
+    else:
+        wanted = {key for key in include if key in EXPORT_LABELS}
+        if not wanted:
+            raise UserError("请至少选择一项要导出的内容。")
+    if wanted & ZH_KEYS and any(not clean(c.zh) for c in cues):
         raise UserError("还有未翻译条目。请继续翻译，或使用“仅导出原文”。")
     out_root = Path(project_path).parent / "exports"
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -492,34 +580,52 @@ def export_files(project_path, project, include_zh=True, ass_style_file=None, as
 
     name = safe_name(project.get("name", "video"))
     lang = project.get("language", "original")
-    files = []
-    for translated in ([True] if chinese_only else ([False, True] if include_zh else [False])):
-        suffix = "中文_zh" if translated else f"原文_{safe_name(lang)}"
-        srt = out / f"{name}_{suffix}.srt"
-        txt = out / f"{name}_{suffix}.txt"
-        save(srt, format_srt(cues, translated, lang))
-        save(txt, "\n".join(clean(c.zh if translated else c.source) for c in cues) + "\n")
-        files.extend([srt, txt])
-    if include_zh and not chinese_only:
-        suffix = f"混合_{safe_name(lang)}_zh"
-        srt = out / f"{name}_{suffix}.srt"
-        txt = out / f"{name}_{suffix}.txt"
-        save(srt, format_srt(cues, language=lang, bilingual=True))
-        save(txt, "\n\n".join(clean(c.source) + "\n" + clean(c.zh) for c in cues) + "\n")
-        files.extend([srt, txt])
-    if include_zh:
-        style_text = None
+    style_text = None
+    if "zh_ass" in wanted or ("blank" in wanted and blank_format == "ass"):
         if ass_style_file:
             try:
                 style_text = Path(ass_style_file).read_text(encoding="utf-8-sig", errors="replace")
             except OSError:
                 style_text = None  # 模板不可读时退回内置默认样式
+    files = []
+    for translated in ([True] if chinese_only else [False, True]):
+        suffix = "中文_zh" if translated else f"原文_{safe_name(lang)}"
+        if ("zh_srt" if translated else "source_srt") in wanted:
+            srt = out / f"{name}_{suffix}.srt"
+            save(srt, format_srt(cues, translated, lang))
+            files.append(srt)
+        if ("zh_txt" if translated else "source_txt") in wanted:
+            txt = out / f"{name}_{suffix}.txt"
+            save(txt, "\n".join(clean(c.zh if translated else c.source) for c in cues) + "\n")
+            files.append(txt)
+    if not chinese_only:
+        suffix = f"混合_{safe_name(lang)}_zh"
+        if "bilingual_srt" in wanted:
+            srt = out / f"{name}_{suffix}.srt"
+            save(srt, format_srt(cues, language=lang, bilingual=True))
+            files.append(srt)
+        if "bilingual_txt" in wanted:
+            txt = out / f"{name}_{suffix}.txt"
+            save(txt, "\n\n".join(clean(c.source) + "\n" + clean(c.zh) for c in cues) + "\n")
+            files.append(txt)
+    if "zh_ass" in wanted:
         ass = out / f"{name}_中文_zh.ass"
         save(ass, format_ass(cues, ass_style_name or "Default", style_text))
         files.append(ass)
+    if "blank" in wanted:
+        blank = out / f"{name}_空轴.{'ass' if blank_format == 'ass' else 'srt'}"
+        save(blank, format_blank_ass(cues, ass_style_name or "Default", style_text) if blank_format == "ass"
+             else format_blank_srt(cues))
+        files.append(blank)
     project["last_export"] = str(out.resolve())
     save_project(project_path, project)
     return files
+
+
+def export_blank(project_path, project, fmt="srt", ass_style_file=None, ass_style_name=None):
+    """只导出 1 份空轴（只有时间轴、没有文字），交给人工翻译。"""
+    return export_files(project_path, project, include_zh=False, include={"blank"}, blank_format=fmt,
+                        ass_style_file=ass_style_file, ass_style_name=ass_style_name)
 
 
 def cues_from_segments(segments, language, stop=None, progress=None):

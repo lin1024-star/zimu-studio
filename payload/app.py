@@ -17,9 +17,11 @@ from tkinter.scrolledtext import ScrolledText
 from core import (APP_VERSION, DEFAULT_MODEL, Cue, UserError, atomic_write, clean,
                   export_files, import_srt_project, insert_project_cue, load_project,
                   parse_time, read_srt, save_duration_change, save_project, set_project_duration,
-                  store_imported_project, timestamp, worker, write_blocked_hint)
+                  store_imported_project, timestamp, worker, write_blocked_hint,
+                  CHINESE_ONLY_KEYS, EXPORT_ITEMS, EXPORT_LABELS, SOURCE_ONLY_KEYS, ZH_KEYS,
+                  default_export_keys, default_export_selection, export_choices)
 from diagnostics import Diagnostics, error_info
-from dialogs import AddCueDialog, DurationDialog, SrtImportDialog
+from dialogs import AddCueDialog, DurationDialog, ExportDialog, SrtImportDialog
 
 APP_DIR = Path(__file__).resolve().parent
 USER_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share")) / "SubtitleStudio"
@@ -40,10 +42,11 @@ HELP = """快速使用
 4. 首次建议点击「仅识别原文」。完成后点选字幕条目，在下方校对原文、人名和术语，点击「保存此条修改」。
 5. 点击「识别并翻译 / 继续」。已有原文不会重复识别；缺少的中文会通过 DeepSeek API 翻译。
 6. 完成后自动导出七份文件：原文、中文、混合版各一份 SRT 和 TXT，以及一份中文 ASS（可在设置里导入自己的 .ass 样式模板）。混合版原文在上、中文在下，逐条对应。点击「打开输出文件夹」。
-7. 点击「新增字幕…」，填写开始、结束时间和原文，也可手填中文。保存后自动按时间插入；继续翻译只补译中文为空的条目。
-8. 只有中文字幕时，可直接修改左侧正文并导出中文 SRT / TXT 两份。要生成原文和混合版，还需要对应原文。
-9. 只有需要翻译缺失条目时才填写 DeepSeek API 密钥。默认只在本次运行内使用，关闭后清除；勾选「记住密钥」时用 Windows 账户级加密保存在本机（仅当前系统用户可解），仍不放进项目或导出文件。
-10. 多个文件可点「添加多个文件…」加入队列，再点识别或翻译；队列依次处理，单个失败自动跳过，完成后统一提示。翻译前会按待译内容弹出费用预估。
+7. 手动导出点「导出文件…」会先弹出勾选面板：现有七项默认全勾，也可以只勾要的那几项。勾「空轴」会多导出一份只有时间轴、没有文字的字幕，用来交给人工翻译，格式可选 SRT 或 ASS（ASS 会套用设置里选的样式模板）。
+8. 点击「新增字幕…」，填写开始、结束时间和原文，也可手填中文。保存后自动按时间插入；继续翻译只补译中文为空的条目。
+9. 只有中文字幕时，可直接修改左侧正文并导出中文 SRT / TXT 两份。要生成原文和混合版，还需要对应原文。
+10. 只有需要翻译缺失条目时才填写 DeepSeek API 密钥。默认只在本次运行内使用，关闭后清除；勾选「记住密钥」时用 Windows 账户级加密保存在本机（仅当前系统用户可解），仍不放进项目或导出文件。
+11. 多个文件可点「添加多个文件…」加入队列，再点识别或翻译；队列依次处理，单个失败自动跳过，完成后统一提示。翻译前会按待译内容弹出费用预估。
 
 字幕持续时间
 
@@ -74,7 +77,7 @@ CPU 模式可直接使用。NVIDIA 显卡请先点击“启用显卡加速”：
 项目和恢复
 
 项目保存在输出目录的素材子文件夹，包含 project.json。每次导出都有新的时间文件夹，不覆盖已有交付。
-已有项目可点击「打开项目 / SRT…」选择 project.json，再点「导出六份文件」。此操作复用已有译文，无需 API 密钥，也不会重新识别或调用翻译 API。
+已有项目可点击「打开项目 / SRT…」选择 project.json，再点「导出文件…」。此操作复用已有译文，无需 API 密钥，也不会重新识别或调用翻译 API。
 导入 SRT 会在输出目录建立独立的 project.json，不覆盖原始 SRT。下次打开该项目，可以保留所有校对结果。
 如果一整套原文、中文和混合 SRT 都还在，优先同时导入原文和中文两份；打开混合 SRT 时，只在确认内容一致后自动使用同目录配套文件。
 识别完成后立即保存原文；翻译每完成一批就保存。翻译中断后可打开 project.json 继续。
@@ -283,7 +286,7 @@ class Application(tk.Tk):
         combo = ttk.Combobox(options, textvariable=self.lang_var, values=["自动识别", "英语", "日语"], state="readonly", width=12)
         combo.pack(side="left", padx=(8, 18))
         self.busy_controls.append(combo)
-        ttk.Label(options, text="原文、中文、混合版，各导出 SRT 和 TXT", style="Muted.TLabel").pack(side="left")
+        ttk.Label(options, text="导出时可勾选：原文 / 中文 / 混合版各 SRT、TXT，中文 ASS，空轴", style="Muted.TLabel").pack(side="left")
         self.button(options, "打开项目 / SRT…", self.open_project, side="right")
 
         action = ttk.Frame(main)
@@ -292,8 +295,8 @@ class Application(tk.Tk):
         self.button(action, "仅识别原文", lambda: self.start_job("transcribe"), side="left", padx=8)
         self.stop_button = self.button(action, "停止", self.stop_job, busy=False, side="left")
         self.stop_button.configure(state="disabled")
-        self.full_export_button = self.button(action, "导出七份文件", lambda: self.manual_export(True), side="right")
-        self.source_export_button = self.button(action, "仅导出原文", lambda: self.manual_export(False), side="right", padx=8)
+        self.full_export_button = self.button(action, "导出文件…", lambda: self.manual_export(True), side="right")
+        self.source_export_button = self.button(action, "仅导出原文…", lambda: self.manual_export(False), side="right", padx=8)
         self.progress = ttk.Progressbar(main, mode="determinate", maximum=100)
         self.progress.grid(row=3, column=0, sticky="ew", pady=(0, 6))
         ttk.Label(main, textvariable=self.status_var, style="Muted.TLabel").grid(row=4, column=0, sticky="w")
@@ -452,8 +455,8 @@ class Application(tk.Tk):
         self.zh_label.configure(text="中文预览（直接修改左侧）" if chinese else "中文校对")
         self.tree.heading("source", text="中文字幕" if chinese else "原文字幕")
         self.tree.heading("zh", text="中文预览" if chinese else "中文字幕")
-        self.full_export_button.configure(text="导出中文字幕" if chinese else "导出六份文件")
-        self.source_export_button.configure(text="导出中文 SRT / TXT" if chinese else "仅导出原文")
+        self.full_export_button.configure(text="导出中文字幕…" if chinese else "导出文件…")
+        self.source_export_button.configure(text="仅导出中文…" if chinese else "仅导出原文…")
         self.zh_text.configure(state="disabled" if chinese or self.busy else "normal")
 
     def refresh_queue_list(self):
@@ -776,7 +779,7 @@ class Application(tk.Tk):
         chinese = (self.project or {}).get("subtitle_mode") == "chinese"
         complete = self.project and self.project["cues"] and all(clean(r["zh"]) for r in self.project["cues"])
         if self.project and self.project.get("recognition_complete") and (mode == "transcribe" or chinese or (complete and not self.force_var.get())):
-            self.manual_export(mode != "transcribe")
+            self.manual_export(mode != "transcribe", ask=False)
             return
         if mode == "translate" and self.force_var.get() and self.project:
             count = sum(bool(clean(r["zh"])) for r in self.project["cues"])
@@ -1032,17 +1035,36 @@ class Application(tk.Tk):
                     return
         self.after(150, self.poll)
 
-    def manual_export(self, include_zh):
+    def manual_export(self, include_zh, ask=True):
         if not self.project or not self.save_current(silent=True):
             if not self.project:
                 messagebox.showinfo("暂无字幕", "请先完成识别或打开已保存项目。")
             return
+        if not self.project.get("cues"):
+            messagebox.showinfo("暂无字幕", "还没有字幕，请先识别或导入 SRT。")
+            return
+        chinese_only = self.project.get("subtitle_mode") == "chinese"
+        missing = sum(1 for row in self.project["cues"] if not clean(row["zh"]))
+        translated = missing == 0
+        include, blank_format = None, getattr(self, "last_blank_format", "srt")
+        if ask:
+            choices = export_choices(chinese_only)
+            disabled = {key for key, _ in choices if key in ZH_KEYS and not translated}
+            note = f"还有 {missing} 条没有中文译文，中文相关项已暂时禁用；可以先导出原文或空轴。" if missing else ""
+            dialog = ExportDialog(self, choices, default_export_selection(include_zh, chinese_only, translated),
+                                  disabled=disabled, blank_format=blank_format, note=note)
+            self.wait_window(dialog)
+            if dialog.result is None:
+                return
+            include = dialog.result["include"]
+            self.last_blank_format = blank_format = dialog.result["blank_format"]
         try:
             self.diagnostics.start_task({"mode": "manual_export", "device": "not_used"})
             self.diagnostics.record("media_info", actual_device="not_used")
             self.diagnostics.record("phase", phase="export")
             files = export_files(self.project_path, self.project, include_zh,
-                                 self.ass_style_var.get().strip() or None, self.ass_style_name_var.get())
+                                 self.ass_style_var.get().strip() or None, self.ass_style_name_var.get(),
+                                 include=include, blank_format=blank_format)
             self.diagnostics.record("exported", phase="completed", export_count=len(files))
             self.status_var.set(f"已导出 {len(files)} 份独立文件。")
             self.log("导出位置：" + str(files[0].parent))

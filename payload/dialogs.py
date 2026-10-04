@@ -344,3 +344,73 @@ class DurationDialog(tk.Toplevel):
         if self.preview():
             self.result = self.options()
             self.destroy()
+
+
+class ExportDialog(tk.Toplevel):
+    """导出前勾选要哪几份。默认全选已有的 7 项，空轴不默认勾。"""
+
+    FORMATS = {"SRT": "srt", "ASS": "ass"}
+
+    def __init__(self, parent, choices, checked, disabled=frozenset(), blank_format="srt", note=""):
+        super().__init__(parent)
+        self.title("导出 · 勾选要哪几份")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.result = None
+        self.vars = {}
+        self.blank_format = tk.StringVar(value="ASS" if blank_format == "ass" else "SRT")
+        self.hint = tk.StringVar()
+        self.note = note
+        body = ttk.Frame(self, padding=20)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="勾选这次要导出的内容", font=(FONT_FAMILY, 15, "bold")).pack(anchor="w", pady=(0, 6))
+        ttk.Label(body, text="默认全部勾选时就等于原来的一键导出；空轴只有时间轴、没有文字，交给人工翻译用。",
+                  style="Muted.TLabel", wraplength=470).pack(anchor="w", pady=(0, 12))
+        for key, label in choices:
+            state = "disabled" if key in disabled else "normal"
+            if key == "blank":
+                row = ttk.Frame(body)
+                row.pack(fill="x", pady=2)
+                var = tk.BooleanVar(value=False)
+                self.vars[key] = var
+                ttk.Checkbutton(row, text=label, variable=var, command=self.sync, state=state).pack(side="left")
+                self.blank_box = ttk.Combobox(row, textvariable=self.blank_format, values=list(self.FORMATS),
+                                              state="disabled", width=6)
+                self.blank_box.pack(side="left", padx=(12, 4))
+                ttk.Label(row, text="格式", style="Muted.TLabel").pack(side="left")
+                continue
+            var = tk.BooleanVar(value=key in checked and state == "normal")
+            self.vars[key] = var
+            ttk.Checkbutton(body, text=label, variable=var, command=self.sync, state=state).pack(anchor="w", pady=2)
+        ttk.Label(body, textvariable=self.hint, wraplength=470, style="Muted.TLabel").pack(anchor="w", pady=(14, 0))
+        footer = ttk.Frame(body)
+        footer.pack(fill="x", pady=(16, 0))
+        ttk.Button(footer, text="取消", command=self.destroy).pack(side="right")
+        self.ok_button = ttk.Button(footer, text="导出", command=self.accept, style="Accent.TButton")
+        self.ok_button.pack(side="right", padx=8)
+        self.bind("<Return>", lambda event: self.accept())
+        self.bind("<Escape>", lambda event: self.destroy())
+        self.sync()
+        self.grab_set()
+
+    def selection(self):
+        return {key for key, var in self.vars.items() if var.get()}
+
+    def sync(self):
+        blank = self.vars.get("blank")
+        self.blank_box.configure(state="readonly" if blank is not None and blank.get() else "disabled")
+        chosen = self.selection()
+        self.ok_button.configure(state="normal" if chosen else "disabled")
+        if not chosen:
+            self.hint.set("请至少勾选一项。")
+        elif self.note:
+            self.hint.set(self.note)
+        else:
+            self.hint.set("导出到输出目录下按时间新建的文件夹，不覆盖以前的交付。")
+
+    def accept(self):
+        chosen = self.selection()
+        if not chosen:
+            return
+        self.result = {"include": chosen, "blank_format": self.FORMATS.get(self.blank_format.get(), "srt")}
+        self.destroy()
