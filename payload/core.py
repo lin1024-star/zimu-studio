@@ -973,12 +973,40 @@ def translate_project(path, project, key, model, glossary, stop, emit, force=Fal
     emit("log", f"本轮 API 用量：输入 {client.input_tokens} tokens，输出 {client.output_tokens} tokens。费用以 DeepSeek 账单为准。")
 
 
-# 估算价格（人民币，元/百万 token）。官方价格可能调整，最终以 DeepSeek 账单为准。
+# 官方价格（人民币，元/百万 tokens，按“缓存未命中”的输入价估算）。
+# 峰谷规则：空闲时段单价 = 高峰时段的一半；
+# 高峰 = 北京时间周一至周五（不含中国法定节假日）9:00-12:00 与 14:00-18:00，
+# 其余时段（含周末与中国法定节假日全天）都是空闲时段。
+# 法定节假日无法离线判断，这里按“工作日 = 有高峰”处理：真正的节假日只会比估算更便宜。
+# 官方价格可能调整，最终以 DeepSeek 账单为准。
 PRICE_CNY = {
-    "deepseek-flash": (0.5, 2.0),
-    "deepseek-chat": (2.0, 8.0),
-    "deepseek-reasoner": (4.0, 16.0),
+    "deepseek-flash": {"peak": (2.0, 8.0), "off": (1.0, 4.0)},
+    "deepseek-v4-pro": {"peak": (9.0, 27.0), "off": (4.5, 13.5)},
 }
+# 认不出的模型名一律按表里最贵的一档估算：宁可高估也不要让使用者低估账单。
+FALLBACK_PRICE_KEY = "deepseek-v4-pro"
+PEAK_WINDOWS_MINUTES = ((9 * 60, 12 * 60), (14 * 60, 18 * 60))
+PRICING_RULE = ("DeepSeek 按峰谷计费：北京时间周一至周五 9:00-12:00、14:00-18:00 为高峰时段，"
+                "其余时段（含周末与中国法定节假日全天）为空闲时段，空闲单价是高峰的一半。")
+
+
+def price_for(model):
+    """返回 (价格表项, 模型名是否精确匹配)。未知模型按最贵的一档估算。"""
+    key = (model or "").strip()
+    if key in PRICE_CNY:
+        return PRICE_CNY[key], True
+    return PRICE_CNY[FALLBACK_PRICE_KEY], False
+
+
+def pricing_period(now=None):
+    """返回 (现在是否高峰时段, 说明文字)。now 默认取本机时间（北京时间）。"""
+    now = now or datetime.now()
+    if now.weekday() >= 5:
+        return False, "现在是周末，全天按空闲时段计费"
+    minutes = now.hour * 60 + now.minute
+    if any(start <= minutes < end for start, end in PEAK_WINDOWS_MINUTES):
+        return True, "现在是工作日高峰时段"
+    return False, "现在是工作日空闲时段"
 
 
 def _cue_field(cue, field):
@@ -996,16 +1024,41 @@ def estimate_tokens(text):
     return int(zh * 1.5 + jp * 1.2 + other * 0.3 + 1)
 
 
-def estimate_cost(cues, model, force=False):
-    """返回 (待译条数, 预估输入 tokens, 预估输出 tokens, 预估人民币元)。纯本地估算，不发起任何请求。"""
+def estimate_cost(cues, model, force=False, now=None):
+    """纯本地估算费用，不发起任何请求。返回 dict：
+
+    count / input_tokens / output_tokens / peak_cost / off_cost /
+    model_known / is_peak / period_note
+    """
     pending = [c for c in cues if force or not clean(_cue_field(c, "zh"))]
     src_tokens = sum(estimate_tokens(clean(_cue_field(c, "source"))) for c in pending)
     overhead = len(pending) * 40 + 300  # 每批提示词与上下文开销
     input_tokens = src_tokens + overhead
     output_tokens = int(src_tokens * 1.2)
-    price_in, price_out = PRICE_CNY.get(model, PRICE_CNY["deepseek-chat"])
-    cost = input_tokens / 1_000_000 * price_in + output_tokens / 1_000_000 * price_out
-    return len(pending), input_tokens, output_tokens, cost
+    prices, model_known = price_for(model)
+    peak = input_tokens / 1_000_000 * prices["peak"][0] + output_tokens / 1_000_000 * prices["peak"][1]
+    off = input_tokens / 1_000_000 * prices["off"][0] + output_tokens / 1_000_000 * prices["off"][1]
+    is_peak, period_note = pricing_period(now)
+    return {"count": len(pending), "input_tokens": input_tokens, "output_tokens": output_tokens,
+            "peak_cost": peak, "off_cost": off, "model_known": model_known,
+            "is_peak": is_peak, "period_note": period_note}
+
+
+def cost_message(estimate, model):
+    """把估算结果写成给使用者看的费用说明，含峰谷两档价格。"""
+    current = estimate["peak_cost"] if estimate["is_peak"] else estimate["off_cost"]
+    other = estimate["off_cost"] if estimate["is_peak"] else estimate["peak_cost"]
+    lines = [f"本次将翻译约 {estimate['count']} 条字幕，"
+             f"预计调用约 {estimate['input_tokens']:,} 输入 + {estimate['output_tokens']:,} 输出 tokens。",
+             "", PRICING_RULE, "",
+             f"{estimate['period_note']}，现在开始按" + ("高峰价" if estimate["is_peak"] else "空闲价") + "计费：",
+             f"· 现在开始：约 ¥{current:.2f}",
+             f"· " + ("等到空闲时段" if estimate["is_peak"] else "若进入高峰时段") + f"：约 ¥{other:.2f}"
+             + ("（可省一半）" if estimate["is_peak"] else "")]
+    if not estimate["model_known"]:
+        lines += ["", f"注意：模型“{model}”不在内置价格表里，这里按最贵的一档估算，实际可能更低。"]
+    lines += ["", "估算仅供参考，实际费用以 DeepSeek 官方账单为准。必须确认后才会开始翻译。"]
+    return "\n".join(lines)
 
 
 def should_alert(mode, ok, in_queue, closing, enabled=True):

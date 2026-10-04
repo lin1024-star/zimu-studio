@@ -5,6 +5,7 @@ import threading
 import unittest
 import urllib.error
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -146,15 +147,67 @@ class CoreTests(unittest.TestCase):
         from core import estimate_cost
         cues = [asdict(Cue(1, 0.0, 1.0, "こんにちは世界")), asdict(Cue(2, 1.0, 2.0, "hello world"))]
         cues[0]["zh"] = "已经翻译"
-        n, tin, tout, cost = estimate_cost(cues, "deepseek-flash", force=False)
-        self.assertEqual(n, 1)
-        self.assertGreater(tin, 0)
-        self.assertGreater(tout, 0)
-        self.assertGreater(cost, 0)
-        n2, tin2, tout2, cost2 = estimate_cost(cues, "deepseek-flash", force=True)
-        self.assertEqual(n2, 2)
-        self.assertGreater(tin2, tin)
-        self.assertGreater(cost2, cost)
+        one = estimate_cost(cues, "deepseek-flash", force=False)
+        self.assertEqual(one["count"], 1)
+        self.assertGreater(one["input_tokens"], 0)
+        self.assertGreater(one["output_tokens"], 0)
+        self.assertGreater(one["off_cost"], 0)
+        both = estimate_cost(cues, "deepseek-flash", force=True)
+        self.assertEqual(both["count"], 2)
+        self.assertGreater(both["input_tokens"], one["input_tokens"])
+        self.assertGreater(both["off_cost"], one["off_cost"])
+
+    def test_price_table_matches_the_official_current_prices(self):
+        # 官方 2026 年价格（元/百万 tokens，缓存未命中）。改了这里就等于改了给使用者看的钱数。
+        from core import PRICE_CNY
+        self.assertEqual(PRICE_CNY["deepseek-flash"]["peak"], (2.0, 8.0))
+        self.assertEqual(PRICE_CNY["deepseek-flash"]["off"], (1.0, 4.0))
+        self.assertEqual(PRICE_CNY["deepseek-v4-pro"]["peak"], (9.0, 27.0))
+        self.assertEqual(PRICE_CNY["deepseek-v4-pro"]["off"], (4.5, 13.5))
+
+    def test_off_peak_is_exactly_half_of_peak(self):
+        from core import PRICE_CNY, estimate_cost
+        cues = [asdict(Cue(1, 0.0, 1.0, "こんにちは世界"))]
+        estimate = estimate_cost(cues, "deepseek-flash")
+        self.assertAlmostEqual(estimate["peak_cost"], estimate["off_cost"] * 2, places=9)
+        for name, table in PRICE_CNY.items():
+            self.assertAlmostEqual(table["peak"][0], table["off"][0] * 2, msg=name)
+            self.assertAlmostEqual(table["peak"][1], table["off"][1] * 2, msg=name)
+
+    def test_pricing_period_follows_the_official_peak_windows(self):
+        from core import pricing_period
+        monday = datetime(2026, 10, 5, 10, 0)          # 2026-10-05 是周一
+        self.assertEqual(monday.weekday(), 0)
+        self.assertTrue(pricing_period(monday)[0])                        # 周一 10:00 高峰
+        self.assertTrue(pricing_period(datetime(2026, 10, 5, 14, 30))[0])  # 14:00-18:00 高峰
+        self.assertFalse(pricing_period(datetime(2026, 10, 5, 12, 0))[0])  # 12:00 起空闲
+        self.assertFalse(pricing_period(datetime(2026, 10, 5, 18, 0))[0])  # 18:00 起空闲
+        self.assertFalse(pricing_period(datetime(2026, 10, 5, 8, 59))[0])
+        saturday = datetime(2026, 10, 10, 10, 0)
+        self.assertEqual(saturday.weekday(), 5)
+        self.assertFalse(pricing_period(saturday)[0])                     # 周末全天空闲
+
+    def test_cost_message_shows_both_peak_and_off_peak_prices(self):
+        from core import cost_message, estimate_cost
+        cues = [asdict(Cue(1, 0.0, 1.0, "こんにちは世界"))]
+        text = cost_message(estimate_cost(cues, "deepseek-v4-pro"), "deepseek-v4-pro")
+        self.assertIn("高峰时段", text)
+        self.assertIn("空闲时段", text)
+        self.assertIn("现在开始", text)
+        self.assertNotIn("不在内置价格表", text)
+        unknown = cost_message(estimate_cost(cues, "some-unlisted-model"), "some-unlisted-model")
+        self.assertIn("不在内置价格表", unknown)      # 认不出的模型必须说清楚按哪档估的
+
+    def test_unlisted_model_falls_back_to_the_most_expensive_tier(self):
+        from core import PRICE_CNY, estimate_cost, FALLBACK_PRICE_KEY
+        cues = [asdict(Cue(1, 0.0, 1.0, "こんにちは世界"))]
+        unknown = estimate_cost(cues, "some-unlisted-model")
+        fallback = estimate_cost(cues, FALLBACK_PRICE_KEY)
+        self.assertFalse(unknown["model_known"])
+        self.assertTrue(fallback["model_known"])
+        self.assertEqual(unknown["peak_cost"], fallback["peak_cost"])
+        for table in PRICE_CNY.values():
+            self.assertLessEqual(table["peak"][1], PRICE_CNY[FALLBACK_PRICE_KEY]["peak"][1])
 
     def test_ass_format_uses_template_styles_and_times(self):
         from core import format_ass, parse_ass_template

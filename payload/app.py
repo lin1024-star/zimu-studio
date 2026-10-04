@@ -88,7 +88,7 @@ CPU 模式可直接使用。NVIDIA 显卡请先点击“启用显卡加速”：
 
 费用与准确度
 
-本地识别没有按次 API 费用；首次需下载模型。DeepSeek 翻译按其 API 用量收费，翻译前会按待译内容预估金额，实际以官方账单为准。
+本地识别没有按次 API 费用；首次需下载模型。DeepSeek 翻译按其 API 用量收费，并且分高峰 / 空闲两档单价；翻译前会按待译内容预估金额并同时列出两档价格，实际以官方账单为准。
 自动识别和翻译可能听错、漏字或断句不理想。发布前请核对人名、数字、术语与字幕同步。
 当服务返回缺行、重复序号或截断结果时，程序会缩小批次重试，仍失败则停止，不把空译文当作完成。
 网络超时重试可能重复产生调用费用，费用请查看 DeepSeek 后台。
@@ -807,11 +807,15 @@ class Application(tk.Tk):
                 except UserError:
                     cues_for_estimate = None
             if cues_for_estimate:
-                from core import estimate_cost
-                n, tin, tout, cost = estimate_cost(cues_for_estimate, self.model_var.get().strip(), self.force_var.get())
-                if n and self.in_queue:
-                    self.log(f"费用预估（队列模式自动继续）：约 {n} 条字幕，预计约 ¥{cost:.2f}，实际以官方账单为准。")
-                elif n and not messagebox.askyesno("翻译费用预估", f"本次将翻译约 {n} 条字幕，预计调用约 {tin:,} 输入 + {tout:,} 输出 tokens，\n按官方单价估算约 ¥{cost:.2f}。实际费用以 DeepSeek 官方账单为准。\n\n必须确认后才会开始翻译。是否继续？"):
+                from core import cost_message, estimate_cost
+                model = self.model_var.get().strip()
+                estimate = estimate_cost(cues_for_estimate, model, self.force_var.get())
+                current = estimate["peak_cost"] if estimate["is_peak"] else estimate["off_cost"]
+                if estimate["count"] and self.in_queue:
+                    self.log(f"费用预估（队列模式自动继续）：约 {estimate['count']} 条字幕，"
+                             f"{estimate['period_note']}，预计约 ¥{current:.2f}；实际以官方账单为准。")
+                elif estimate["count"] and not messagebox.askyesno(
+                        "翻译费用预估", cost_message(estimate, model) + "\n\n是否继续？"):
                     return
             elif not self.in_queue:
                 # 全新素材：先本地识别（免费），拿到真实原文后再弹精确的费用确认
@@ -849,12 +853,13 @@ class Application(tk.Tk):
         try:
             if not self.project or not self.project.get("recognition_complete"):
                 raise UserError("识别结果不可用，请重试。")
-            from core import estimate_cost
-            n, tin, tout, cost = estimate_cost(self.project["cues"], self.model_var.get().strip(), False)
-            if not n:
+            from core import cost_message, estimate_cost
+            model = self.model_var.get().strip()
+            estimate = estimate_cost(self.project["cues"], model, False)
+            if not estimate["count"]:
                 self.log("原文已全部识别，没有需要翻译的条目。")
                 return
-            if not messagebox.askyesno("翻译费用预估", f"本地识别已完成。本次将翻译约 {n} 条字幕，预计调用约 {tin:,} 输入 + {tout:,} 输出 tokens，\n按官方单价估算约 ¥{cost:.2f}。实际费用以 DeepSeek 官方账单为准。\n\n必须确认后才会开始翻译。是否继续？"):
+            if not messagebox.askyesno("翻译费用预估", "本地识别已完成。\n\n" + cost_message(estimate, model) + "\n\n是否继续？"):
                 self.log("已取消翻译；原文已保存，可稍后打开项目继续。")
                 return
             if not self.api_key_var.get().strip():
