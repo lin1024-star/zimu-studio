@@ -16,7 +16,7 @@ from tkinter.scrolledtext import ScrolledText
 
 from core import (APP_VERSION, DEFAULT_MODEL, Cue, UserError, atomic_write, clean,
                   export_files, import_srt_project, insert_project_cue, load_project,
-                  parse_time, read_srt, save_duration_change, save_project, set_project_duration,
+                  parse_time, read_srt, restore_axis_cues, save_duration_change, save_project, set_project_duration,
                   store_imported_project, timestamp, worker, write_blocked_hint,
                   CHINESE_ONLY_KEYS, EXPORT_ITEMS, EXPORT_LABELS, SOURCE_ONLY_KEYS, ZH_KEYS,
                   default_export_keys, default_export_selection, export_choices, should_alert)
@@ -162,6 +162,7 @@ class Application(tk.Tk):
         self.ass_style_var = tk.StringVar(value=self.settings.get("ass_style_file", ""))
         self.ass_style_name_var = tk.StringVar(value=self.settings.get("ass_style_name", "Default"))
         self.alert_var = tk.BooleanVar(value=bool(self.settings.get("alert_when_done", True)))
+        self.tidy_var = tk.BooleanVar(value=bool(self.settings.get("tidy_axis", True)))
         self.force_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="选择视频，或打开已有项目 / SRT 直接校对。")
         self.summary_var = tk.StringVar(value="尚未载入字幕")
@@ -188,7 +189,8 @@ class Application(tk.Tk):
                 "local_model": self.local_model_var.get(), "model": self.model_var.get(),
                 "glossary": self.glossary.get("1.0", "end-1c"),
                 "ass_style_file": self.ass_style_var.get(), "ass_style_name": self.ass_style_name_var.get(),
-                "alert_when_done": bool(self.alert_var.get())}
+                "alert_when_done": bool(self.alert_var.get()),
+                "tidy_axis": bool(self.tidy_var.get())}
         try:
             atomic_write(CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
         except OSError as exc:
@@ -300,6 +302,7 @@ class Application(tk.Tk):
         self.stop_button.configure(state="disabled")
         self.full_export_button = self.button(action, "导出文件…", lambda: self.manual_export(True), side="right")
         self.source_export_button = self.button(action, "仅导出原文…", lambda: self.manual_export(False), side="right", padx=8)
+        self.axis_button = self.button(action, "待确认…", self.show_axis_review, side="right", padx=8)
         self.progress = ttk.Progressbar(main, mode="determinate", maximum=100)
         self.progress.grid(row=3, column=0, sticky="ew", pady=(0, 6))
         ttk.Label(main, textvariable=self.status_var, style="Muted.TLabel").grid(row=4, column=0, sticky="w")
@@ -405,6 +408,8 @@ class Application(tk.Tk):
         ttk.Label(settings, text="导入 .ass 模板即可使用其字体/颜色/位置；留空用内置默认样式（白字黑边）。导出含中文时自动生成“中文_zh.ass”。", style="Muted.TLabel").grid(row=19, column=1, columnspan=2, sticky="w", pady=6)
         ttk.Checkbutton(settings, text="翻译完成后提醒（还原并置顶窗口 + 提示音）", variable=self.alert_var).grid(row=20, column=0, columnspan=3, sticky="w", pady=(14, 2))
         ttk.Label(settings, text="翻译要跑几分钟到几十分钟；跑完时把窗口拉到前台提醒一次。取消勾选则不打扰，可在状态栏和日志里查看结果。", style="Muted.TLabel").grid(row=21, column=1, columnspan=2, sticky="w")
+        ttk.Checkbutton(settings, text="识别后自动整理轴（合并重复、并入语气碎片、修正拖音）", variable=self.tidy_var).grid(row=22, column=0, columnspan=3, sticky="w", pady=(14, 2))
+        ttk.Label(settings, text="只动重复文本和时长，不重跑识别、不改变独一无二的内容；整理前的原文会存进项目，随时可还原。", style="Muted.TLabel").grid(row=23, column=1, columnspan=2, sticky="w")
         gpu_btn = ttk.Button(settings, text="启用显卡加速", command=self.start_gpu_setup, style="Accent.TButton")
         gpu_btn.grid(row=11, column=2, padx=10, pady=6)
         self.busy_controls.append(gpu_btn)
@@ -837,7 +842,8 @@ class Application(tk.Tk):
                   "device": "cpu" if self.device_var.get().startswith("CPU") else "cuda", "model_dir": str(USER_DIR / "models"),
                   "api_key": self.api_key_var.get(), "model": self.model_var.get().strip(),
                   "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": self.force_var.get(), "mode": effective_mode,
-                  "ass_style_file": self.ass_style_var.get().strip() or None, "ass_style_name": self.ass_style_name_var.get()}
+                  "ass_style_file": self.ass_style_var.get().strip() or None, "ass_style_name": self.ass_style_name_var.get(),
+                  "tidy_axis": bool(self.tidy_var.get())}
         self.diagnostics.start_task(config)
         self.launch_job(config)
         self.force_var.set(False)
@@ -964,6 +970,7 @@ class Application(tk.Tk):
                     self.log("导出位置：" + value["folder"])
                     self.force_var.set(False)
                     self.alert_when_finished(value)
+                    self.announce_axis_review()
                 elif kind in ("error", "cancelled"):
                     self.seen_terminal = True
                     self.last_job_ok = False
@@ -1045,6 +1052,92 @@ class Application(tk.Tk):
                     self.destroy()
                     return
         self.after(150, self.poll)
+
+    def announce_axis_review(self):
+        """跑完后提醒还有待确认的位置，指向「待确认…」。"""
+        review = (self.project or {}).get("axis_review") or []
+        gaps = sum(1 for row in review if row.get("kind") == "gap")
+        shorts = sum(1 for row in review if row.get("kind") == "short")
+        parts = []
+        if gaps:
+            parts.append(f"{gaps} 处长静音")
+        if shorts:
+            parts.append(f"{shorts} 条过短")
+        if parts:
+            self.log("待确认：" + "、".join(parts) + "。点「待确认…」查看，程序不会替你删改。")
+
+    def show_axis_review(self):
+        """列出识别后要人工确认的位置，并允许还原整理前的轴。
+
+        机器只标位置，不替人做决定：像「ほんと?」这种说得很快的完整台词
+        不该合并，孤零零一个字的碎片也不该乱删，都留给使用者看一眼。
+        """
+        if not self.project:
+            messagebox.showinfo("待确认", "还没有载入字幕。")
+            return
+        review = self.project.get("axis_review") or []
+        raw = self.project.get("axis_raw") or []
+        gaps = [row for row in review if row.get("kind") == "gap"]
+        shorts = [row for row in review if row.get("kind") == "short"]
+        if not gaps and not shorts:
+            messagebox.showinfo("待确认", "当前项目没有记录到需要人工确认的位置。")
+            return
+        win = tk.Toplevel(self)
+        win.title("待确认的位置")
+        win.transient(self)
+        win.geometry("780x430")
+        ttk.Label(win, text="程序只标出位置，不替你改。逐条看过再决定是否手动删改。",
+                  style="Muted.TLabel").pack(anchor="w", padx=10, pady=(10, 4))
+        box = ScrolledText(win, wrap="word", height=18)
+        box.pack(fill="both", expand=True, padx=10)
+        lines = []
+        if gaps:
+            lines.append(f"长静音：{len(gaps)} 处连续 3 秒以上没有字幕，可能漏识别。")
+            for gap in gaps:
+                lines.append("    {} → {}（{:.1f} 秒），在「第 {} 条」和「第 {} 条」之间".format(
+                    timestamp(gap["start"]), timestamp(gap["end"]), gap["seconds"],
+                    gap["after_id"], gap["before_id"]))
+        if shorts:
+            if lines:
+                lines.append("")
+            lines.append(f"过短条目：{len(shorts)} 条短于 0.5 秒。")
+            lines.append("    「ほんと?」这类是说很快的完整台词，不用管；孤零零一个字的可以自己判断。")
+            for short in shorts:
+                lines.append("    第 {} 条：{:.2f} 秒「{}」".format(
+                    short["id"], short["seconds"], short["text"]))
+        box.insert("1.0", "\n".join(lines))
+        box.configure(state="disabled")
+        bar = ttk.Frame(win)
+        bar.pack(fill="x", padx=10, pady=8)
+        if raw:
+            ttk.Button(bar, text=f"还原整理前的轴（{len(raw)} 条）",
+                       command=lambda: self.revert_axis(win)).pack(side="left")
+            ttk.Label(bar, text="已翻译的中文会按时间保留。", style="Muted.TLabel").pack(side="left", padx=8)
+        ttk.Button(bar, text="关闭", command=win.destroy).pack(side="right")
+        win.bind("<Escape>", lambda event: win.destroy())
+        win.focus_set()
+
+    def revert_axis(self, win=None):
+        """把轴换回整理前保存的 axis_raw，并尽量保住已完成的翻译。"""
+        raw = (self.project or {}).get("axis_raw") or []
+        if not raw or not self.project_path:
+            messagebox.showinfo("还原", "当前项目没有可还原的整理前轴。")
+            return
+        if not messagebox.askyesno("还原", f"把字幕还原成整理前的 {len(raw)} 条？已翻译的中文会按时间保留。"):
+            return
+        updated = dict(self.project)
+        updated["cues"] = restore_axis_cues(raw, self.project["cues"])
+        updated.pop("axis_raw", None)
+        updated.pop("axis_review", None)
+        try:
+            save_project(self.project_path, updated)
+        except (OSError, UserError) as exc:
+            messagebox.showerror("还原失败", str(exc))
+            return
+        self.reload_project(self.project_path)
+        self.log(f"已还原整理前的轴：{len(raw)} 条。")
+        if win is not None:
+            win.destroy()
 
     def alert_when_finished(self, done):
         """翻译跑完时把窗口拉到前台提醒。

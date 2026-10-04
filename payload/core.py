@@ -87,7 +87,8 @@ def atomic_write(path, text, encoding="utf-8"):
 def save_project(path, project):
     # Whitelist: credentials are never accepted into the project format.
     allowed = {"version", "input", "fingerprint", "recognition", "language", "cues",
-               "recognition_complete", "translation_profile", "last_export", "name", "subtitle_mode"}
+               "recognition_complete", "translation_profile", "last_export", "name", "subtitle_mode",
+               "axis_raw", "axis_review"}
     safe = {k: v for k, v in project.items() if k in allowed}
     atomic_write(path, json.dumps(safe, ensure_ascii=False, indent=2))
 
@@ -1116,6 +1117,83 @@ def should_alert(mode, ok, in_queue, closing, enabled=True):
     return bool(enabled and ok and mode == "translate" and not in_queue and not closing)
 
 
+AXIS_REVIEW_LIMIT = 20
+
+
+def axis_change_text(item):
+    """把一条整理记录写成日志里的一句话。"""
+    if item["kind"] == "fold":
+        return "第 {} 条：与下一条完全相同，合并为「{}」（删掉重复的「{}」）".format(
+            item["id"], item["kept"], item["dropped"])
+    if item["kind"] == "merge":
+        return "第 {} 条：并入碎片「{}」".format(item["id"], item["dropped"])
+    return "第 {} 条：拖音「{}」→「{}」".format(item["id"], item["before"], item["after"])
+
+
+def tidy_axis(cues, emit, gap_threshold=None):
+    """识别完成后整理轴：拖音、重复、碎片，并列出要人工确认的位置。
+
+    整理只动时间与重复文本；调用方负责把整理前的结果存进项目以便还原。
+    返回 (整理后的 cues, 报告)。
+    """
+    from polish import polish, LONG_GAP_SECONDS
+    threshold = LONG_GAP_SECONDS if gap_threshold is None else gap_threshold
+    polished, report = polish(cues, gap_threshold=threshold)
+    if not report["changes"]:
+        emit("log", "轴整理：未发现重复或碎片，原文保持 {} 条。".format(report["cues_before"]))
+    else:
+        emit("log", "轴整理：原文 {} 条 → {} 条（合并重复 {}、并入碎片 {}、修正拖音 {}）。整理前的原始结果已存入项目，可还原。".format(
+            report["cues_before"], report["cues_after"], report["folded"],
+            report["fragments_merged"], report["elongation_fixed"]))
+        for item in report["changes"]:
+            emit("log", "  " + axis_change_text(item))
+    gaps = [r for r in report["review"] if r["kind"] == "gap"]
+    shorts = [r for r in report["review"] if r["kind"] == "short"]
+    if gaps:
+        emit("log", "待确认：{} 处连续 {} 秒以上没有字幕，可能漏识别，建议抽听。".format(
+            len(gaps), int(threshold)))
+        for gap in gaps[:AXIS_REVIEW_LIMIT]:
+            emit("log", "  {} → {}（{:.1f} 秒）；上一句是第 {} 条，下一句是第 {} 条".format(
+                timestamp(gap["start"]), timestamp(gap["end"]), gap["seconds"],
+                gap["after_id"], gap["before_id"]))
+        if len(gaps) > AXIS_REVIEW_LIMIT:
+            emit("log", "  另有 {} 处未列出。".format(len(gaps) - AXIS_REVIEW_LIMIT))
+    if shorts:
+        emit("log", "待确认：{} 条短于 0.5 秒，可能是真实短台词，也可能是误识别。".format(len(shorts)))
+        for short in shorts[:AXIS_REVIEW_LIMIT]:
+            emit("log", "  第 {} 条：{:.2f} 秒「{}」".format(short["id"], short["seconds"], short["text"]))
+        if len(shorts) > AXIS_REVIEW_LIMIT:
+            emit("log", "  另有 {} 条未列出。".format(len(shorts) - AXIS_REVIEW_LIMIT))
+    return polished, report
+
+
+def restore_axis_cues(raw, current):
+    """还原整理前的轴，同时尽量保留已经翻译好的中文。
+
+    整理会合并、折叠条目，条数和时间都可能变。还原时按时间取回中文：
+    起止时间完全相同的直接复用，否则取时间上重叠最多的一句，
+    并把它从候选里移除，避免同一句中文被贴到多条上。
+    """
+    spare = [dict(row) for row in current if clean(row.get("zh", ""))]
+    exact = {(round(row["start"], 3), round(row["end"], 3)): row["zh"] for row in spare}
+    out = []
+    for index, row in enumerate(raw):
+        start, end = row["start"], row["end"]
+        zh = exact.get((round(start, 3), round(end, 3)), "")
+        if not zh and spare:
+            best, best_overlap = None, 0.0
+            for cand in spare:
+                overlap = min(end, cand["end"]) - max(start, cand["start"])
+                if overlap > best_overlap:
+                    best, best_overlap = cand, overlap
+            if best is not None:
+                zh = best["zh"]
+                spare.remove(best)
+        out.append({"id": index + 1, "start": start, "end": end,
+                    "source": row["source"], "zh": zh})
+    return out
+
+
 def run_job(config, stop, emit):
     check_cancel(stop)
     emit("phase", "preparing")
@@ -1148,9 +1226,18 @@ def run_job(config, stop, emit):
             emit("diagnostic", {"event": "media_info", "actual_device": "not_used"})
             cues = read_srt(source)
             lang = config["language"] or ("ja" if any(re.search(r"[\u3040-\u30ff]", c.source) for c in cues) else "en")
+            from_asr = False
         else:
             cues, lang = transcribe(source, config["asr_model"], config["language"], config["device"],
                                     config["model_dir"], stop, emit)
+            from_asr = True
+        raw = list(cues)
+        # 只整理识别结果；用户自己导入的 SRT 原样保留，不擅自改动。
+        if from_asr and config.get("tidy_axis", True):
+            cues, axis_report = tidy_axis(cues, emit)
+            if axis_report["changes"]:
+                project["axis_raw"] = [asdict(c) for c in raw]
+                project["axis_review"] = axis_report["review"]
         project.update(cues=[asdict(c) for c in cues], language=lang, recognition_complete=True)
         save_project(project_path, project)
         emit("log", f"原文已保存：{len(cues)} 条。")
