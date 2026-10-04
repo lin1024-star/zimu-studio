@@ -432,21 +432,32 @@ def format_ass(cues, style_name="Default", style_text=None, language="zh"):
     return head + "\n" + "\n".join(rows) + "\n"
 
 
+WRITE_BLOCKED_HINT = (
+    "保存文件被拒绝访问：系统或安全软件拦住了本程序写入。\n"
+    "常见原因：360 等安全软件的“文档保护 / 反勒索”保护了 文档、桌面、视频 等文件夹，\n"
+    "只拦截本程序写入（受信任的程序不受影响）。\n"
+    "处理办法（任选其一）：\n"
+    "1）把软件目录加入安全软件信任区；\n"
+    "2）关闭安全软件的“文档保护 / 反勒索服务”；\n"
+    "3）在设置里把“输出目录”改到 D 盘等其他位置后重试。\n"
+    "已完成的识别和翻译都保存在项目里，不受影响。"
+)
+
+
+def write_blocked_hint(exc):
+    """权限类写入错误 → 可操作提示；不是权限错误则返回 None。
+
+    识别、翻译、导出、保存项目等所有写盘路径共用这一份提示，
+    避免只有导出路径能给出安全软件 / 信任区的指引。
+    """
+    if getattr(exc, "winerror", None) == 5 or getattr(exc, "errno", None) in (1, 13):
+        return WRITE_BLOCKED_HINT
+    return None
+
+
 def _export_blocked(exc):
     """把导出时的权限错误翻译成可操作的提示。"""
-    winerror = getattr(exc, "winerror", None)
-    errno = getattr(exc, "errno", None)
-    if winerror == 5 or errno in (1, 13):
-        return UserError(
-            "导出被拒绝访问（WinError 5）：写入输出目录被系统或安全软件拦住。\n"
-            "常见原因：360 等安全软件的“文档保护 / 反勒索”保护了 文档、视频、桌面 等文件夹，\n"
-            "只拦截本程序写入（受信任的程序不受影响）。\n"
-            "处理办法（任选其一）：\n"
-            "1）把软件目录加入安全软件信任区；\n"
-            "2）关闭安全软件的“文档保护 / 反勒索服务”；\n"
-            "3）在设置里把“输出目录”改到 D 盘等其他位置后重试。\n"
-            "已识别的原文和译文都已保存，不受影响。")
-    return UserError(f"导出失败：{exc}")
+    return UserError(write_blocked_hint(exc) or f"导出失败：{exc}")
 
 
 def export_files(project_path, project, include_zh=True, ass_style_file=None, ass_style_name=None):
@@ -715,29 +726,45 @@ class DeepSeekClient:
 
     def _post(self, body):
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        request = urllib.request.Request(API_URL, data=data, headers={
-            "Content-Type": "application/json", "Authorization": "Bearer " + self.key,
-            "User-Agent": "SubtitleStudio/" + APP_VERSION})
-        for attempt in range(3):
+        # 系统里可能配着一个连不上的代理（代理软件没开、端口已失效），这会让每次请求都秒失败。
+        # 连不上就丢掉系统代理改走直连，而不是把错误直接抛给使用者。
+        proxies = urllib.request.getproxies()
+        proxy_configured = bool(proxies.get("http") or proxies.get("https"))
+        opener = None  # None 表示走系统默认（会使用系统代理）
+        attempt = 0
+        while True:
             check_cancel(self.stop)
+            # 每次尝试都必须新建 Request：urllib 走代理时会改写 request.host，
+            # 复用同一个对象会让接下来“改直连”的那一次仍然连到代理地址。
+            request = urllib.request.Request(API_URL, data=data, headers={
+                "Content-Type": "application/json", "Authorization": "Bearer " + self.key,
+                "User-Agent": "SubtitleStudio/" + APP_VERSION})
             try:
-                with urllib.request.urlopen(request, timeout=90) as response:
+                with (urllib.request.urlopen(request, timeout=90) if opener is None
+                      else opener.open(request, timeout=90)) as response:
                     raw = response.read(4 * 1024 * 1024)
                 return json.loads(raw)
             except urllib.error.HTTPError as exc:
                 code = exc.code
                 exc.close()
                 if code in (429, 500, 502, 503, 504) and attempt < 2:
-                    if self.stop.wait(2 ** (attempt + 1)):
+                    attempt += 1
+                    if self.stop.wait(2 ** attempt):
                         check_cancel(self.stop)
                     continue
                 messages = {400: "请求参数或模型名称不被接受，请检查模型设置。", 401: "API 密钥无效，请检查 DeepSeek 设置。",
                             402: "DeepSeek 账户余额不足，请充值后继续。", 403: "DeepSeek 拒绝访问，请检查账户权限。",
                             404: "接口或模型不存在，请检查模型名称。", 429: "DeepSeek 请求过于频繁，请稍后继续。"}
                 raise UserError(f"DeepSeek HTTP {code}：" + messages.get(code, "服务暂时不可用，请稍后继续。")) from None
-            except (urllib.error.URLError, TimeoutError, OSError) as exc:
-                if attempt < 2:
-                    if self.stop.wait(2 ** (attempt + 1)):
+            except (urllib.error.URLError, TimeoutError, OSError):
+                if opener is None and proxy_configured:
+                    # 系统代理不可用：改用直连重试，这一次不计入重试次数、不等待。
+                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    proxy_configured = False
+                    continue
+                attempt += 1
+                if attempt < 3:
+                    if self.stop.wait(2 ** attempt):
                         check_cancel(self.stop)
                     continue
                 raise UserError("连接 DeepSeek 失败或超时。已保存完成的翻译；请检查网络后继续。") from None
@@ -944,4 +971,5 @@ def worker(config, stop, messages):
     except Exception as exc:
         emit("diagnostic", {"event": "error", **error_info(exc, gpu=config.get("device") == "cuda")})
         # Do not leak request headers, secrets, or user transcript text into logs.
-        emit("error", f"处理失败（{type(exc).__name__}）。请检查文件权限、磁盘空间或重新打开项目后再试。")
+        blocked = write_blocked_hint(exc)
+        emit("error", blocked or f"处理失败（{type(exc).__name__}）。请检查文件权限、磁盘空间或重新打开项目后再试。")

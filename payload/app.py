@@ -17,7 +17,7 @@ from tkinter.scrolledtext import ScrolledText
 from core import (APP_VERSION, DEFAULT_MODEL, Cue, UserError, atomic_write, clean,
                   export_files, import_srt_project, insert_project_cue, load_project,
                   parse_time, read_srt, save_duration_change, save_project, set_project_duration,
-                  store_imported_project, timestamp, worker)
+                  store_imported_project, timestamp, worker, write_blocked_hint)
 from diagnostics import Diagnostics, error_info
 from dialogs import AddCueDialog, DurationDialog, SrtImportDialog
 
@@ -26,6 +26,11 @@ USER_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share")
 CONFIG_PATH = USER_DIR / "settings.json"
 FONT_FAMILY = "Microsoft YaHei UI" if sys.platform == "win32" else "Noto Sans CJK SC"
 BG, PANEL, INK, MUTED, ACCENT = "#edf2f6", "#ffffff", "#182d41", "#5f7385", "#137b83"
+
+
+def save_error_text(exc):
+    """保存失败时给使用者看的话：权限类错误换成可操作提示，其余保留原文。"""
+    return write_blocked_hint(exc) or str(exc)
 
 HELP = """快速使用
 
@@ -180,8 +185,11 @@ class Application(tk.Tk):
                 "ass_style_file": self.ass_style_var.get(), "ass_style_name": self.ass_style_name_var.get()}
         try:
             atomic_write(CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
-        except OSError:
+        except OSError as exc:
             self.log("本机设置未能保存；当前任务仍可继续。")
+            hint = write_blocked_hint(exc)
+            if hint:
+                self.log(hint)
 
     def configure_style(self):
         style = ttk.Style(self)
@@ -581,7 +589,7 @@ class Application(tk.Tk):
             self.log("已建立可继续编辑的 project.json；下次打开此项目即可保留所有校对结果。")
             self.notebook.select(0)
         except (UserError, OSError) as exc:
-            messagebox.showerror("无法保存导入项目", str(exc))
+            messagebox.showerror("无法保存导入项目", save_error_text(exc))
 
     def add_cue(self):
         if self.busy:
@@ -608,7 +616,7 @@ class Application(tk.Tk):
             self.tree.see(str(selected))
             self.status_var.set("新增字幕已保存并按时间插入。其他字幕和译文已保留。")
         except (UserError, OSError) as exc:
-            messagebox.showerror("无法添加字幕", str(exc))
+            messagebox.showerror("无法添加字幕", save_error_text(exc))
 
     def set_duration(self):
         if self.busy:
@@ -631,7 +639,7 @@ class Application(tk.Tk):
             else:
                 self.status_var.set("当前字幕时间已符合设置，无需修改。")
         except (UserError, OSError) as exc:
-            messagebox.showerror("无法保存时长", str(exc))
+            messagebox.showerror("无法保存时长", save_error_text(exc))
 
     def reload_project(self, path):
         p = load_project(path)
@@ -730,7 +738,7 @@ class Application(tk.Tk):
                 self.log(f"已保存第 {c.id} 条修改；保留当前填写的译文。")
             return True
         except (UserError, OSError) as exc:
-            messagebox.showerror("无法保存修改", str(exc))
+            messagebox.showerror("无法保存修改", save_error_text(exc))
             return False
 
     def start_job(self, mode):
@@ -1040,7 +1048,7 @@ class Application(tk.Tk):
             self.log("导出位置：" + str(files[0].parent))
         except (UserError, OSError) as exc:
             self.diagnostics.record("error", phase="error", **error_info(exc))
-            messagebox.showerror("无法导出", str(exc))
+            messagebox.showerror("无法导出", save_error_text(exc))
 
     def export_diagnostics(self):
         if self.diagnostic_exporting:

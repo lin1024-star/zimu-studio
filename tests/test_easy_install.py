@@ -61,7 +61,7 @@ class EasyInstallTests(unittest.TestCase):
     def test_srt_install_does_not_persist_invalid_model_alias(self):
         with patch.object(easy_runtime, 'ROOT', self.root):
             easy_runtime.initialize_settings('srt')
-        self.assertEqual(json.loads((self.root / 'settings.json').read_text())['asr_model'], 'small')
+        self.assertEqual(json.loads((self.root / 'settings.json').read_text(encoding='utf-8'))['asr_model'], 'small')
 
     def test_installer_diagnostics_exclude_user_settings_and_secrets(self):
         (self.root / 'settings.json').write_text('{"transcript":"PRIVATE_SOURCE","api_key":"sk-CANARY"}')

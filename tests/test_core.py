@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "payload"))
 from core import (Cancelled, Cue, DeepSeekClient, ResponseError, UserError, clean,
                   cues_from_segments, export_files, fingerprint, format_srt,
                   load_project, read_srt, run_job, save_project, timestamp,
-                  translate_project, validate_translation)
+                  translate_project, validate_translation, worker)
 
 
 def make_project(n=4):
@@ -357,6 +357,95 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             with self.assertRaises(Cancelled):
                 client.translate_safe([Cue(1,0,1,"Hello")],"en",[],"")
             request.assert_not_called()
+
+    def test_dead_system_proxy_falls_back_to_direct_connection(self):
+        # 系统里配着代理软件但代理没开时，请求会秒失败；应当自动改走直连而不是直接报错。
+        body=json.dumps(reply([{"id":1,"text":"你好"}])).encode("utf-8")
+        class Response:
+            def read(self,n): return body
+            def __enter__(self): return self
+            def __exit__(self,*exc): return False
+        class Opener:
+            def __init__(self): self.calls=0
+            def open(self,request,timeout=None):
+                self.calls+=1
+                return Response()
+        opener=Opener()
+        client=DeepSeekClient("fake-key")
+        with patch("core.urllib.request.getproxies",return_value={"https":"http://127.0.0.1:7890"}), \
+             patch("core.urllib.request.urlopen",side_effect=urllib.error.URLError("connection refused")) as proxied, \
+             patch("core.urllib.request.build_opener",return_value=opener):
+            result=client.translate_safe([Cue(1,0,1,"Hello")],"en",[],"")
+        self.assertEqual(result,{1:"你好"})
+        self.assertEqual(proxied.call_count,1)  # 先按系统设置试一次代理
+        self.assertEqual(opener.calls,1)        # 失败后立刻改直连，不等待
+
+    def test_proxy_fallback_sends_a_fresh_unproxied_request(self):
+        # urllib 走代理时会改写 request.host；如果复用同一个 Request 对象，
+        # “改直连”的那一次仍会连到代理地址。这里模拟这个改写，确保直连请求是全新的。
+        body=json.dumps(reply([{"id":1,"text":"你好"}])).encode("utf-8")
+        seen=[]
+        def proxied(request,timeout=None):
+            request.host="127.0.0.1:7890"   # 与 urllib.request.Request.set_proxy 的行为一致
+            raise urllib.error.URLError("connection refused")
+        class Response:
+            def read(self,n): return body
+            def __enter__(self): return self
+            def __exit__(self,*exc): return False
+        class Opener:
+            def open(self,request,timeout=None):
+                seen.append(request.host)
+                return Response()
+        client=DeepSeekClient("fake-key")
+        with patch("core.urllib.request.getproxies",return_value={"https":"http://127.0.0.1:7890"}), \
+             patch("core.urllib.request.urlopen",side_effect=proxied), \
+             patch("core.urllib.request.build_opener",return_value=Opener()):
+            result=client.translate_safe([Cue(1,0,1,"Hello")],"en",[],"")
+        self.assertEqual(result,{1:"你好"})
+        self.assertEqual(seen,["api.deepseek.com"])
+
+    def test_proxy_and_direct_both_dead_reports_network_error(self):
+        class NoSleep:
+            def is_set(self): return False
+            def wait(self,timeout): return False
+        def dead(request,timeout=None): raise urllib.error.URLError("connection refused")
+        class DeadOpener:
+            def open(self,request,timeout=None): raise urllib.error.URLError("connection refused")
+        client=DeepSeekClient("fake-key",stop=NoSleep())
+        with patch("core.urllib.request.getproxies",return_value={"https":"http://127.0.0.1:7890"}), \
+             patch("core.urllib.request.urlopen",side_effect=dead) as proxied, \
+             patch("core.urllib.request.build_opener",return_value=DeadOpener()):
+            with self.assertRaises(UserError) as caught:
+                client.translate_safe([Cue(1,0,1,"Hello")],"en",[],"")
+        self.assertEqual(proxied.call_count,1)  # 系统代理只试一次，不再反复重试它
+        self.assertIn("检查网络",str(caught.exception))
+
+    def test_http_error_does_not_bypass_configured_proxy(self):
+        # 代理本身是通的（能返回 401），就不能绕过它——只对连不上才改直连。
+        failure=urllib.error.HTTPError("https://api.deepseek.com/chat/completions",401,"Unauthorized",{},None)
+        client=DeepSeekClient("fake-key")
+        with patch("core.urllib.request.getproxies",return_value={"https":"http://127.0.0.1:7890"}), \
+             patch("core.urllib.request.urlopen",side_effect=failure) as call, \
+             patch("core.urllib.request.build_opener") as build:
+            with self.assertRaises(UserError):
+                client.translate_safe([Cue(1,0,1,"Hello")],"en",[],"")
+        self.assertEqual(call.call_count,1)
+        build.assert_not_called()
+
+    def test_job_write_failure_reports_security_software_guidance(self):
+        captured=[]
+        with patch("core.run_job",side_effect=PermissionError(13,"拒绝访问")):
+            worker({},self.stop,SimpleNamespace(put=lambda item: captured.append(item)))
+        message=[v for k,v in captured if k=="error"][0]
+        self.assertIn("信任区",message)
+        self.assertNotIn("PermissionError",message)
+
+    def test_job_other_failure_keeps_generic_message(self):
+        captured=[]
+        with patch("core.run_job",side_effect=RuntimeError("boom")):
+            worker({},self.stop,SimpleNamespace(put=lambda item: captured.append(item)))
+        message=[v for k,v in captured if k=="error"][0]
+        self.assertIn("处理失败（RuntimeError）",message)
 
 
 if __name__ == "__main__":

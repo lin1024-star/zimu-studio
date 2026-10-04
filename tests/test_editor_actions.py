@@ -149,6 +149,26 @@ class EditorActions(unittest.TestCase):
             self.a.import_subtitles("cancel.srt")
         self.assertIs(self.a.project, original)
 
+    def test_permission_denied_save_shows_security_software_guidance(self):
+        a = self.a
+        a.tree.selection_set("2")
+        a.select_cue()
+        a.zh_text.value = "改动后的第二句。"
+        with patch("app.save_project", side_effect=PermissionError(13, "拒绝访问")), \
+             patch("app.messagebox.showerror") as box:
+            self.assertFalse(a.save_current())
+        self.assertIn("信任区", box.call_args[0][1])
+
+    def test_other_write_failure_keeps_original_message(self):
+        a = self.a
+        a.tree.selection_set("2")
+        a.select_cue()
+        a.zh_text.value = "改动后的第二句。"
+        with patch("app.save_project", side_effect=OSError("disk full")), \
+             patch("app.messagebox.showerror") as box:
+            self.assertFalse(a.save_current())
+        self.assertEqual(box.call_args[0][1], "disk full")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
