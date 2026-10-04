@@ -259,6 +259,24 @@ class CoreTests(unittest.TestCase):
         for table in PRICE_CNY.values():
             self.assertLessEqual(table["peak"][1], PRICE_CNY[FALLBACK_PRICE_KEY]["peak"][1])
 
+    def test_legacy_flash_model_names_are_priced_as_flash(self):
+        # 官方脚注(1)：旧模型名仍可调用，由 V4.1-Flash 提供服务并按 Flash 价格计费。
+        from core import estimate_cost
+        cues = [asdict(Cue(1, 0.0, 1.0, "こんにちは世界"))]
+        current = estimate_cost(cues, "deepseek-flash")
+        for legacy in ("deepseek-v4-flash", "deepseek-v4-flash-vision-exp"):
+            alias = estimate_cost(cues, legacy)
+            self.assertTrue(alias["model_known"], legacy)
+            self.assertEqual(alias["peak_cost"], current["peak_cost"], legacy)
+            self.assertEqual(alias["off_cost"], current["off_cost"], legacy)
+
+    def test_cost_message_says_input_is_estimated_at_cache_miss_price(self):
+        from core import cost_message, estimate_cost
+        cues = [asdict(Cue(1, 0.0, 1.0, "こんにちは世界"))]
+        text = cost_message(estimate_cost(cues, "deepseek-flash"), "deepseek-flash")
+        self.assertIn("缓存未命中", text)
+        self.assertIn("命中缓存会更便宜", text)
+
     def test_ass_format_uses_template_styles_and_times(self):
         from core import format_ass, parse_ass_template
         template = """[Script Info]

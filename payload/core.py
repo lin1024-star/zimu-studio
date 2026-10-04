@@ -987,6 +987,13 @@ PRICE_CNY = {
 }
 # 认不出的模型名一律按表里最贵的一档估算：宁可高估也不要让使用者低估账单。
 FALLBACK_PRICE_KEY = "deepseek-v4-pro"
+# 官方脚注(1)：旧模型名仍可调用，但由 DeepSeek-V4.1-Flash 提供服务并按 Flash 价格计费。
+PRICE_ALIASES = {
+    "deepseek-v4-flash": "deepseek-flash",
+    "deepseek-v4-flash-vision-exp": "deepseek-flash",
+}
+# 估算只用“缓存未命中”的输入价：命中缓存会更便宜，这样只会高估不会低估。
+CACHE_NOTE = "输入按“缓存未命中”单价估算；命中缓存会更便宜，实际以账单为准。"
 PEAK_WINDOWS_MINUTES = ((9 * 60, 12 * 60), (14 * 60, 18 * 60))
 PRICING_RULE = ("DeepSeek 按峰谷计费：北京时间周一至周五（不含中国法定节假日）9:00-12:00、"
                 "14:00-18:00 为高峰时段；其余时段，包括周末及中国法定节假日全天，均为空闲时段。"
@@ -1020,6 +1027,9 @@ def price_for(model):
     key = (model or "").strip()
     if key in PRICE_CNY:
         return PRICE_CNY[key], True
+    alias = PRICE_ALIASES.get(key)
+    if alias:
+        return PRICE_CNY[alias], True
     return PRICE_CNY[FALLBACK_PRICE_KEY], False
 
 
@@ -1092,7 +1102,8 @@ def cost_message(estimate, model):
     if not estimate["holiday_covered"]:
         lines += ["", f"注意：内置的放假安排只覆盖 {estimate['holiday_years']} 年，"
                       "遇到未收录年份的法定节假日，可能被按高峰估算（实际会更便宜）。"]
-    lines += ["", "估算仅供参考，实际费用以 DeepSeek 官方账单为准。必须确认后才会开始翻译。"]
+    lines += ["", CACHE_NOTE,
+              "估算仅供参考，实际费用以 DeepSeek 官方账单为准。必须确认后才会开始翻译。"]
     return "\n".join(lines)
 
 
