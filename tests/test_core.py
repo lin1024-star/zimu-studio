@@ -14,7 +14,7 @@ from core import (Cancelled, Cue, DEFAULT_EXPORT_KEYS, DeepSeekClient, ResponseE
                   clean, cues_from_segments, default_export_keys, default_export_selection,
                   export_blank, export_choices, export_files, fingerprint, format_blank_ass,
                   format_blank_srt, format_srt, load_project, read_srt, run_job, save_project,
-                  timestamp, translate_project, validate_translation, worker)
+                  should_alert, timestamp, translate_project, validate_translation, worker)
 
 
 def make_project(n=4):
@@ -529,6 +529,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         self.assertEqual(default_export_selection(True,False,False),{"source_srt","source_txt"})
         self.assertEqual(default_export_selection(False,False,True),{"source_srt","source_txt"})
         self.assertEqual(default_export_selection(True,True,True),{"zh_srt","zh_txt","zh_ass"})
+
+    def test_finish_alert_fires_only_for_a_successful_translation(self):
+        self.assertTrue(should_alert("translate",True,False,False))
+        self.assertFalse(should_alert("transcribe",True,False,False))    # 仅识别很快，不打断
+        self.assertFalse(should_alert("translate",False,False,False))    # 失败已有错误弹窗
+        self.assertFalse(should_alert("translate",True,True,False))      # 队列模式已统一弹过
+        self.assertFalse(should_alert("translate",True,False,True))      # 正在退出，不弹
+        self.assertFalse(should_alert("translate",True,False,False,enabled=False))  # 使用者关了开关
+        self.assertFalse(should_alert(None,True,False,False))            # 没有 mode 不猜
 
 
 if __name__ == "__main__":

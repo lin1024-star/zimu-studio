@@ -19,7 +19,7 @@ from core import (APP_VERSION, DEFAULT_MODEL, Cue, UserError, atomic_write, clea
                   parse_time, read_srt, save_duration_change, save_project, set_project_duration,
                   store_imported_project, timestamp, worker, write_blocked_hint,
                   CHINESE_ONLY_KEYS, EXPORT_ITEMS, EXPORT_LABELS, SOURCE_ONLY_KEYS, ZH_KEYS,
-                  default_export_keys, default_export_selection, export_choices)
+                  default_export_keys, default_export_selection, export_choices, should_alert)
 from diagnostics import Diagnostics, error_info
 from dialogs import AddCueDialog, DurationDialog, ExportDialog, SrtImportDialog
 
@@ -160,6 +160,7 @@ class Application(tk.Tk):
         self.model_var = tk.StringVar(value=self.settings.get("model", DEFAULT_MODEL))
         self.ass_style_var = tk.StringVar(value=self.settings.get("ass_style_file", ""))
         self.ass_style_name_var = tk.StringVar(value=self.settings.get("ass_style_name", "Default"))
+        self.alert_var = tk.BooleanVar(value=bool(self.settings.get("alert_when_done", True)))
         self.force_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="选择视频，或打开已有项目 / SRT 直接校对。")
         self.summary_var = tk.StringVar(value="尚未载入字幕")
@@ -185,7 +186,8 @@ class Application(tk.Tk):
                 "asr_model": self.asr_var.get(), "device": self.device_var.get(),
                 "local_model": self.local_model_var.get(), "model": self.model_var.get(),
                 "glossary": self.glossary.get("1.0", "end-1c"),
-                "ass_style_file": self.ass_style_var.get(), "ass_style_name": self.ass_style_name_var.get()}
+                "ass_style_file": self.ass_style_var.get(), "ass_style_name": self.ass_style_name_var.get(),
+                "alert_when_done": bool(self.alert_var.get())}
         try:
             atomic_write(CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
         except OSError as exc:
@@ -400,6 +402,8 @@ class Application(tk.Tk):
         self.busy_controls.append(self.ass_style_combo)
         self.refresh_ass_styles()
         ttk.Label(settings, text="导入 .ass 模板即可使用其字体/颜色/位置；留空用内置默认样式（白字黑边）。导出含中文时自动生成“中文_zh.ass”。", style="Muted.TLabel").grid(row=19, column=1, columnspan=2, sticky="w", pady=6)
+        ttk.Checkbutton(settings, text="翻译完成后提醒（还原并置顶窗口 + 提示音）", variable=self.alert_var).grid(row=20, column=0, columnspan=3, sticky="w", pady=(14, 2))
+        ttk.Label(settings, text="翻译要跑几分钟到几十分钟；跑完时把窗口拉到前台提醒一次。取消勾选则不打扰，可在状态栏和日志里查看结果。", style="Muted.TLabel").grid(row=21, column=1, columnspan=2, sticky="w")
         gpu_btn = ttk.Button(settings, text="启用显卡加速", command=self.start_gpu_setup, style="Accent.TButton")
         gpu_btn.grid(row=11, column=2, padx=10, pady=6)
         self.busy_controls.append(gpu_btn)
@@ -953,6 +957,7 @@ class Application(tk.Tk):
                     self.status_var.set(f"完成：已导出 {len(value['files'])} 份文件。")
                     self.log("导出位置：" + value["folder"])
                     self.force_var.set(False)
+                    self.alert_when_finished(value)
                 elif kind in ("error", "cancelled"):
                     self.seen_terminal = True
                     self.last_job_ok = False
@@ -1034,6 +1039,35 @@ class Application(tk.Tk):
                     self.destroy()
                     return
         self.after(150, self.poll)
+
+    def alert_when_finished(self, done):
+        """翻译跑完时把窗口拉到前台提醒。
+
+        翻译要跑几分钟到几十分钟，窗口在后台时使用者否则完全不知道跑完了。
+        判定交给 core.should_alert，这里只负责动作。
+        """
+        mode = (self.current_config or {}).get("mode")
+        if not should_alert(mode, True, self.in_queue, self.close_when_stopped, self.alert_var.get()):
+            return
+        self.deiconify()
+        try:
+            self.lift()
+            self.attributes("-topmost", True)
+            self.focus_force()
+        except tk.TclError:
+            pass
+        try:
+            self.bell()
+        except tk.TclError:
+            pass
+        try:
+            messagebox.showinfo("翻译完成",
+                                f"中文翻译已完成，共导出 {len(done['files'])} 份文件。\n\n导出位置：\n{done['folder']}")
+        finally:
+            try:
+                self.attributes("-topmost", False)
+            except tk.TclError:
+                pass
 
     def manual_export(self, include_zh, ask=True):
         if not self.project or not self.save_current(silent=True):

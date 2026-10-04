@@ -1008,6 +1008,15 @@ def estimate_cost(cues, model, force=False):
     return len(pending), input_tokens, output_tokens, cost
 
 
+def should_alert(mode, ok, in_queue, closing, enabled=True):
+    """任务结束后是否弹“翻译完成”强提醒。
+
+    只有真正在翻译、成功完成、不在队列里、也不是正在退出、且开关打开时才提醒。
+    仅识别很快，不值得打断；队列模式结束时已经统一弹过一次，不重复弹。
+    """
+    return bool(enabled and ok and mode == "translate" and not in_queue and not closing)
+
+
 def run_job(config, stop, emit):
     check_cancel(stop)
     emit("phase", "preparing")
