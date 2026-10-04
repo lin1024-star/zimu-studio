@@ -72,7 +72,7 @@ class EasyInstallTests(unittest.TestCase):
         self.assertNotIn('PRIVATE_SOURCE', report)
         self.assertNotIn('sk-CANARY', report)
         self.assertNotIn(str(self.root), report)
-        self.assertEqual(json.loads(report)['app_version'], '1.6.0')
+        self.assertEqual(json.loads(report)['app_version'], '1.6.1')
 
 
 if __name__ == '__main__':

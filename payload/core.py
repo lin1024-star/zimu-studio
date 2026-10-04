@@ -19,7 +19,7 @@ from pathlib import Path
 from diagnostics import error_info
 from paths import data_root
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 DEFAULT_MODEL = "deepseek-flash"
 API_URL = "https://api.deepseek.com/chat/completions"
 LANGUAGES = {"en": "英语", "ja": "日语", "zh": "中文"}
@@ -689,9 +689,8 @@ def _transcribe_once(path, model_name, language, device, model_dir, stop, emit):
     try:
         import onnxruntime
         onnxruntime.disable_telemetry_events()
-        from faster_whisper import WhisperModel
     except (ImportError, OSError) as exc:
-        raise UserError("语音识别组件未就绪。请打开“字幕工坊_安装与启动.exe”，选择 small 或 Turbo 后点“一键安装 / 修复”；若提示 DLL 错误，请查看小白指南。") from exc
+        raise UserError(ASR_COMPONENT_HINT) from exc
     model = None
     engine = None
     try:
@@ -705,10 +704,14 @@ def _transcribe_once(path, model_name, language, device, model_dir, stop, emit):
             pass  # Optional metadata must not change recognition behavior.
         compute = "int8" if device == "cpu" else "int8_float16"
         emit("phase", "model_loading")
-        emit("status", "正在加载本地模型…" if Path(model_name).is_dir() else "正在加载模型；首次使用此模型需要下载…")
-        prepared = prepared_model_path(model_name, model_dir)
-        if prepared != model_name:
-            emit("status", "正在加载安装器已经准备好的本地模型…")
+        # 定下载线路必须在 import faster_whisper 之前：huggingface_hub 的端点常量
+        # 是导入时读 HF_ENDPOINT 决定的，导入之后再设就晚了。
+        prepared = prepare_model(model_name, model_dir, emit, stop)
+        try:
+            from faster_whisper import WhisperModel
+        except (ImportError, OSError) as exc:
+            raise UserError(ASR_COMPONENT_HINT) from exc
+        emit("status", "正在加载本地模型…" if Path(prepared).is_dir() else "正在加载模型…")
         model = WhisperModel(prepared, device=device, compute_type=compute,
                              download_root=str(model_dir), cpu_threads=max(1, min(8, os.cpu_count() or 4)),
                              num_workers=1)
@@ -739,14 +742,321 @@ def _transcribe_once(path, model_name, language, device, model_dir, stop, emit):
         gc.collect()
 
 
+ASR_COMPONENT_HINT = ("语音识别组件未就绪。请打开“字幕工坊_安装与启动.exe”，"
+                      "选择 small 或 Turbo 后点“一键安装 / 修复”；若提示 DLL 错误，请查看小白指南。")
+
+# 内置模型名 → Hugging Face 仓库。程序自己下载时用。
+BUILTIN_MODEL_REPOS = {
+    "tiny": "Systran/faster-whisper-tiny",
+    "base": "Systran/faster-whisper-base",
+    "small": "Systran/faster-whisper-small",
+    "medium": "Systran/faster-whisper-medium",
+    "large-v3": "Systran/faster-whisper-large-v3",
+    "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+}
+# 大约多少 MB。只用来在下载前把要等多久说清楚，不做校验。
+MODEL_DOWNLOAD_MB = {"tiny": 75, "base": 145, "small": 484,
+                     "medium": 1530, "large-v3": 3090, "turbo": 1620}
+HF_OFFICIAL = "https://huggingface.co"
+HF_MIRROR = "https://hf-mirror.com"
+MODEL_ALLOW_PATTERNS = ("config.json", "preprocessor_config.json", "model.bin",
+                        "tokenizer.json", "vocabulary.json", "vocabulary.txt")
+_MODEL_REQUIRED = ("model.bin", "config.json", "tokenizer.json")
+_PROXY_ENV = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+
+
+def downloaded_model_dir(model_name, model_dir):
+    """程序自己下好的模型放这里。
+
+    每个模型单独一个文件夹：安装器的 prepared/<name>/ 也是这么分的。
+    全塞进 models/ 根目录会让不同模型的 config.json、model.bin 互相覆盖。
+    """
+    return Path(model_dir) / "downloaded" / model_name
+
+
+def _model_folder_ready(folder, extra=()):
+    return all((folder / name).is_file() for name in _MODEL_REQUIRED + tuple(extra))
+
+
+def local_model_status(model_name, model_dir):
+    """本机有没有这个内置模型：返回 "prepared" / "downloaded" / ""。"""
+    if model_name not in BUILTIN_MODEL_REPOS:
+        return ""
+    if _model_folder_ready(Path(model_dir) / "prepared" / model_name, ("ready.json",)):
+        return "prepared"
+    if _model_folder_ready(downloaded_model_dir(model_name, model_dir)):
+        return "downloaded"
+    return ""
+
+
 def prepared_model_path(model_name, model_dir):
-    """Only known aliases may resolve to the installer's verified local models."""
-    if model_name not in {"small", "turbo", "tiny"}:
-        return model_name
-    candidate = Path(model_dir) / "prepared" / model_name
-    if all((candidate / name).is_file() for name in ("model.bin", "config.json", "tokenizer.json", "ready.json")):
-        return str(candidate)
+    """内置模型名 → 本机文件夹；本机还没有就原样返回，交给下载流程。"""
+    status = local_model_status(model_name, model_dir)
+    if status == "prepared":
+        return str(Path(model_dir) / "prepared" / model_name)
+    if status == "downloaded":
+        return str(downloaded_model_dir(model_name, model_dir))
     return model_name
+
+
+def model_download_mb(model_name):
+    """这个模型大约要下多少 MB。"""
+    return MODEL_DOWNLOAD_MB.get(model_name, 0)
+
+
+def _probe_endpoint(url, use_proxy, timeout=6):
+    """一次很短的探测：这个地址现在连不连得上。"""
+    request = urllib.request.Request(url, method="HEAD",
+                                     headers={"User-Agent": "SubtitleStudio/" + APP_VERSION})
+    try:
+        if use_proxy:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return 200 <= getattr(response, "status", 200) < 400
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=timeout) as response:
+            return 200 <= getattr(response, "status", 200) < 400
+    except Exception:
+        return False
+
+
+def choose_download_route(repo, emit=None, probe=_probe_endpoint):
+    """决定从哪下、走不走系统代理，返回 (endpoint, use_proxy)。
+
+    国内直连 huggingface.co 常常连不上；机器上又可能挂着一个早就失效的代理
+    （代理软件没开、端口变了）。两种情况都会让人白等几十秒才看到报错。
+    这里先花几秒探一遍，把能走通的路线定下来，再交给真正的下载。
+    """
+    routes = ((HF_MIRROR, True, "国内镜像"),
+              (HF_MIRROR, False, "国内镜像（不使用代理）"),
+              (HF_OFFICIAL, True, "Hugging Face 官网"),
+              (HF_OFFICIAL, False, "Hugging Face 官网（不使用代理）"))
+    path = "/{}/resolve/main/config.json".format(repo)
+    for endpoint, use_proxy, label in routes:
+        if probe(endpoint + path, use_proxy):
+            if emit:
+                emit("log", "模型下载线路：" + label + "。")
+            return endpoint, use_proxy
+    return HF_MIRROR, False
+
+
+def apply_download_route(endpoint, use_proxy):
+    """必须在 import huggingface_hub 之前调用。
+
+    它的端点常量是导入时读 HF_ENDPOINT 决定的，导入之后再设就晚了。
+    """
+    os.environ["HF_ENDPOINT"] = endpoint
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
+    # 必须关掉 Xet。huggingface_hub 1.x 默认把文件本体走 cas-server.xethub.hf.co，
+    # 那是另一个域名：镜像换不掉它，实测返回 401 Unauthorized，进度走到 0 就失败。
+    # 关掉之后回到普通 HTTPS 下载，才会真正走 HF_ENDPOINT（也就是镜像）。
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    if not use_proxy:
+        for name in _PROXY_ENV:
+            os.environ.pop(name, None)
+        os.environ["NO_PROXY"] = "*"
+
+
+class _DownloadWatcher:
+    """按目标文件夹的大小报进度。
+
+    faster-whisper 关掉了自己的进度条（无控制台的界面里没法显示），
+    而几百 MB 到 3 GB 的下载不能让人看起来像卡死。
+    """
+
+    def __init__(self, folder, total_mb, emit, interval=1.0):
+        self.folder, self.total_mb, self.emit = Path(folder), total_mb, emit
+        self.interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def size(self):
+        total = 0
+        try:
+            for item in self.folder.rglob("*"):
+                if item.is_file():
+                    total += item.stat().st_size
+        except OSError:
+            pass
+        return total
+
+    def report(self):
+        megabytes = self.size() / 1048576
+        if self.total_mb:
+            self.emit("progress", min(99, megabytes / self.total_mb * 100))
+        self.emit("status", f"正在下载模型：{megabytes:.0f} / 约 {self.total_mb} MB。"
+                            "可以中断，下次接着下，已经下好的部分不用重下。")
+
+    def _run(self):
+        while not self._stop.wait(self.interval):
+            self.report()
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    def close(self):
+        self._stop.set()
+
+
+MODELSCOPE_BASE = "https://modelscope.cn/models"
+CHUNK_BYTES = 262144
+
+
+def modelscope_url(repo, name):
+    return f"{MODELSCOPE_BASE}/{repo}/resolve/master/{name}"
+
+
+def modelscope_ready(repo, probe=_probe_endpoint):
+    """魔搭上有没有这个模型。
+
+    国内实测（20 MB 样本，直连）：魔搭 14.8 MB/s，hf-mirror 120 秒都没下完。
+    差约 90 倍，所以有就先走这里。
+    """
+    return probe(modelscope_url(repo, "config.json"), False)
+
+
+def _download_one(url, target, stop, on_bytes, timeout=60):
+    """下一个文件；已经存在的 .part 接着下，不从头来。"""
+    part = target.with_name(target.name + ".part")
+    done = part.stat().st_size if part.exists() else 0
+    request = urllib.request.Request(url, headers={"User-Agent": "SubtitleStudio/" + APP_VERSION})
+    if done:
+        request.add_header("Range", "bytes={}-".format(done))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=timeout) as response:
+        if done and getattr(response, "status", 200) != 206:
+            done = 0  # 服务器不支持续传，只能从头下
+            part.unlink(missing_ok=True)
+        with part.open("ab" if done else "wb") as handle:
+            while True:
+                check_cancel(stop)
+                chunk = response.read(CHUNK_BYTES)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                on_bytes(len(chunk))
+    part.replace(target)
+
+
+def download_from_modelscope(repo, dest, emit, stop, total_mb):
+    """从魔搭拉模型文件。返回下好的总字节数。
+
+    只认必需的几个文件；仓库里没有的（vocabulary.json / .txt 二选一）跳过。
+    """
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    counter = {"bytes": 0, "reported": 0.0}
+
+    def on_bytes(count):
+        counter["bytes"] += count
+        megabytes = counter["bytes"] / 1048576
+        if megabytes - counter["reported"] >= 1:
+            counter["reported"] = megabytes
+            if total_mb:
+                emit("progress", min(99, megabytes / total_mb * 100))
+            emit("status", f"正在下载模型：{megabytes:.0f} / 约 {total_mb} MB。"
+                            "可以中断，下次接着下，已经下好的部分不用重下。")
+
+    for name in MODEL_ALLOW_PATTERNS:
+        check_cancel(stop)
+        target = dest / name
+        if target.is_file():
+            counter["bytes"] += target.stat().st_size
+            continue
+        try:
+            _download_one(modelscope_url(repo, name), target, stop, on_bytes)
+        except urllib.error.HTTPError as exc:
+            code = exc.code
+            exc.close()
+            # 魔搭对仓库里没有的文件不一定回 404（实测有回 500 的），
+            # 一律当作"这个仓库没有这个文件"跳过。必需文件缺没缺由 _model_folder_ready 兜底。
+            emit("log", f"魔搭上没有 {name}（HTTP {code}），跳过。")
+            continue
+    return counter["bytes"]
+
+
+def model_download_hint(model_name, total_mb, dest, source="魔搭和 Hugging Face"):
+    return (f"下载 {model_name} 模型失败（约 {total_mb} MB）：{source} 都没连上。\n\n"
+            "可以这样做：\n"
+            "1. 把“识别模型”换成 small 或 turbo 再试——本机已有的话不用下载；\n"
+            "2. 关掉代理软件（Clash、v2ray 之类）后重新开始；\n"
+            "3. 网络恢复后重新开始识别即可，已经下好的部分不会重下。\n\n"
+            f"模型会存在这里：{dest}")
+
+
+def download_builtin_model(model_name, model_dir, emit, stop=None):
+    """把内置模型下到 models/downloaded/<name>/，返回该文件夹。
+
+    首次使用某个模型要下几百 MB 到 3 GB；断网重来会接着下。
+    """
+    repo = BUILTIN_MODEL_REPOS.get(model_name)
+    if not repo:
+        raise UserError(f"不认识的模型名“{model_name}”。请在“识别模型”里重新选一个。")
+    dest = downloaded_model_dir(model_name, model_dir)
+    total_mb = model_download_mb(model_name)
+    endpoint, use_proxy = choose_download_route(repo, emit)
+    apply_download_route(endpoint, use_proxy)
+    try:
+        import huggingface_hub
+        from huggingface_hub import constants as hub_constants
+    except (ImportError, OSError) as exc:
+        raise UserError(ASR_COMPONENT_HINT) from exc
+    try:
+        # 关掉下载库自带的进度条：界面里没有控制台，写不出去。进度由 _DownloadWatcher 报。
+        from faster_whisper.utils import disabled_tqdm as quiet_tqdm
+    except Exception:
+        quiet_tqdm = None
+    # 端点常量是导入时读的；这里再兜一次底，防止它已经被别的模块先导入了。
+    if getattr(hub_constants, "ENDPOINT", None) != endpoint:
+        hub_constants.ENDPOINT = endpoint
+        hub_constants.HUGGINGFACE_CO_URL_TEMPLATE = (
+            endpoint + "/{repo_id}/resolve/{revision}/{filename}")
+    dest.mkdir(parents=True, exist_ok=True)
+    emit("log", f"首次使用 {model_name}，需要下载约 {total_mb} MB；只下这一次，以后直接用。")
+    options = {"allow_patterns": list(MODEL_ALLOW_PATTERNS)}
+    if quiet_tqdm is not None:
+        options["tqdm_class"] = quiet_tqdm
+    watcher = _DownloadWatcher(dest, total_mb, emit).start()
+    try:
+        huggingface_hub.snapshot_download(repo, local_dir=str(dest), **options)
+    except Exception as exc:
+        raise UserError(model_download_hint(model_name, total_mb, dest)) from exc
+    finally:
+        watcher.close()
+    if stop is not None:
+        check_cancel(stop)
+    emit("log", f"{model_name} 模型已下载完成，以后直接使用。")
+    return str(dest)
+
+
+def prepare_model(model_name, model_dir, emit, stop=None):
+    """返回可以直接交给 faster-whisper 的模型路径。
+
+    本机有就用本机的（安装器准备的或之前下好的）；没有就下载。
+    下载优先走魔搭：国内实测比 hf-mirror 快约 90 倍。
+    """
+    existing = prepared_model_path(model_name, model_dir)
+    if existing != model_name:
+        return existing
+    repo = BUILTIN_MODEL_REPOS.get(model_name)
+    if not repo:
+        return model_name  # 使用者自己填的本地路径或 Hugging Face 仓库 id，交给原逻辑
+    dest = downloaded_model_dir(model_name, model_dir)
+    total_mb = model_download_mb(model_name)
+    if modelscope_ready(repo):
+        emit("log", f"首次使用 {model_name}，从魔搭下载约 {total_mb} MB；只下这一次，以后直接用。")
+        try:
+            download_from_modelscope(repo, dest, emit, stop, total_mb)
+        except UserError:
+            raise
+        except Exception as exc:
+            raise UserError(model_download_hint(model_name, total_mb, dest, "魔搭")) from exc
+        if not _model_folder_ready(dest):
+            raise UserError(model_download_hint(model_name, total_mb, dest, "魔搭"))
+        emit("log", f"{model_name} 模型已下载完成，以后直接使用。")
+        return str(dest)
+    return download_builtin_model(model_name, model_dir, emit, stop)
 
 
 def transcribe(path, model_name, language, device, model_dir, stop, emit):

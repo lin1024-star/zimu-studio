@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "version": "1.6.0",
+  "version": "1.6.1",
   "python": {
     "name": "python-3.13.15-amd64.zip",
     "url": "https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.zip",

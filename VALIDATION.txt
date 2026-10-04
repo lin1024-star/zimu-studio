@@ -1,6 +1,24 @@
 字幕工坊 1.6+ 懒人包验证记录
 生成日期：2026-10-03（在 Windows 10/11 x64 实机执行）
 
+【1.6.1 补充验证（2026-10-04）】
+1. 主程序自己下载识别模型（新增）：Python 测试 176 项通过（skipped=1），安装器逻辑 23 项通过。
+2. 线路探测与代理回退（实测）：故意把 HTTP_PROXY / HTTPS_PROXY 指向并不存在的
+   127.0.0.1:7890，探测正确判定为“国内镜像（不使用代理）”，下载照常完成。
+3. 下载源速度实测（20 MB 样本、国内直连）：
+   - 魔搭 ModelScope：1.3 秒，14.82 MB/s
+   - hf-mirror.com：120 秒仍未下完，低于 0.17 MB/s
+   结论：以魔搭为第一优先，hf-mirror.com 次之，huggingface.co 最后。
+4. 端到端实测：tiny 模型（约 75 MB）走完整代码路径下载成功，耗时 7.4 秒（约 10 MB/s），
+   必需文件齐全；第二次调用不再下载；只下到 config.json 的半成品不会被判定为“已下好”。
+5. 已实测否决的做法：只把 HF_ENDPOINT 指向镜像。huggingface_hub 1.x 的文件本体默认走
+   cas-server.xethub.hf.co，实测返回 401 Unauthorized —— 接口地址换了镜像也下不下来，
+   必须同时设置 HF_HUB_DISABLE_XET=1。此结论由真机下载失败复现得到，不是推测。
+6. 识别后自动整理轴（新增）：4 分钟 GTA 日语直播素材（60 条）实测 60 → 56 条、过短 7 → 5、
+   重叠 0 → 0、拖音 1 → 0；逐条复核文本未发现误伤。长静音与剩余过短条目只报告不擅改；
+   整理前的原文存入 project.json 的 axis_raw，可在界面一键还原（还原时按时间保留已翻译的中文）。
+7. 编译：安装器使用系统 csc（C# 5）与 net45 参考程序集，x64 Windows GUI 目标。
+
 已完成的检查
 1. 安装器使用微软 .NET Framework 4.5 参考程序集（Microsoft.NETFramework.ReferenceAssemblies.net45 1.0.3）与系统 csc（C# 5）编译，x64 Windows GUI 目标；build.py 代码页参数改为 65001，Windows/Linux 编译器通用。
 2. IL 兼容性审计（String.Split/Trim 重载）：88 个方法体、101 次 String 调用，0 个不兼容调用。因本机 360 安全软件拦截 Assembly.LoadFrom，审计改用内存加载完成。

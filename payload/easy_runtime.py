@@ -53,7 +53,7 @@ def gpu_setup():
 
 
 def diagnose():
-    result = {"app_version": "1.6.0", "python": platform.python_version(),
+    result = {"app_version": "1.6.1", "python": platform.python_version(),
               "os": platform.system() + " " + platform.release(), "machine": platform.machine(),
               "free_disk_gb": round(shutil.disk_usage(ROOT).free / 1e9, 2), "packages": {}}
     for name in ["faster-whisper", "ctranslate2", "av", "onnxruntime", "numpy", "huggingface-hub"]:

@@ -19,6 +19,7 @@ from core import (APP_VERSION, DEFAULT_MODEL, Cue, UserError, atomic_write, clea
                   parse_time, read_srt, restore_axis_cues, save_duration_change, save_project, set_project_duration,
                   store_imported_project, timestamp, worker, write_blocked_hint,
                   CHINESE_ONLY_KEYS, EXPORT_ITEMS, EXPORT_LABELS, SOURCE_ONLY_KEYS, ZH_KEYS,
+                  BUILTIN_MODEL_REPOS, local_model_status, model_download_mb,
                   default_export_keys, default_export_selection, export_choices, should_alert)
 from diagnostics import Diagnostics, error_info
 from dialogs import AddCueDialog, DurationDialog, ExportDialog, SrtImportDialog
@@ -163,6 +164,7 @@ class Application(tk.Tk):
         self.ass_style_name_var = tk.StringVar(value=self.settings.get("ass_style_name", "Default"))
         self.alert_var = tk.BooleanVar(value=bool(self.settings.get("alert_when_done", True)))
         self.tidy_var = tk.BooleanVar(value=bool(self.settings.get("tidy_axis", True)))
+        self.model_hint_var = tk.StringVar()
         self.force_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="选择视频，或打开已有项目 / SRT 直接校对。")
         self.summary_var = tk.StringVar(value="尚未载入字幕")
@@ -171,6 +173,7 @@ class Application(tk.Tk):
         self.busy_controls = []
         self.configure_style()
         self.build_ui()
+        self.refresh_model_hint()
         self.bind("<F4>", lambda event: self.set_duration())
         self.protocol("WM_DELETE_WINDOW", self.close_app)
         self.after(150, self.poll)
@@ -385,6 +388,7 @@ class Application(tk.Tk):
             c = ttk.Combobox(settings, textvariable=var, values=values, state="readonly", width=28)
             c.grid(row=r, column=1, sticky="w", pady=6)
             self.busy_controls.append(c)
+        ttk.Label(settings, textvariable=self.model_hint_var, style="Muted.TLabel").grid(row=10, column=2, sticky="w", padx=10)
         ttk.Label(settings, text="CPU 可直接使用。显卡首次下载约 570 MB 组件；下载可继续，显卡不可用时自动使用 CPU。", style="Muted.TLabel").grid(row=12, column=1, columnspan=2, sticky="w", pady=6)
         ttk.Label(settings, text="本地模型文件夹").grid(row=13, column=0, sticky="w", pady=6)
         entry = ttk.Entry(settings, textvariable=self.local_model_var)
@@ -754,6 +758,39 @@ class Application(tk.Tk):
             messagebox.showerror("无法保存修改", save_error_text(exc))
             return False
 
+    def refresh_model_hint(self):
+        """把本机已有的模型标出来。
+
+        下拉里六个模型长得一样，选到没下的那个会先下几百 MB 到 3 GB，
+        使用者有权在下拉旁边就看见这件事。
+        """
+        ready = [name for name in BUILTIN_MODEL_REPOS
+                 if local_model_status(name, str(USER_DIR / "models"))]
+        if ready:
+            self.model_hint_var.set("本机已有：" + "、".join(ready) + "；选其他的需要先下载")
+        else:
+            self.model_hint_var.set("本机还没有模型，首次使用会自动下载")
+
+    def confirm_model_download(self):
+        """选到本机还没有的模型时，先把要下多少、能不能中断说清楚再动手。
+
+        几百 MB 到 3 GB 的下载不能悄悄开始，也不能等失败了才让人知道。
+        """
+        chosen = self.asr_var.get().strip()
+        if chosen not in BUILTIN_MODEL_REPOS:
+            return True
+        if local_model_status(chosen, str(USER_DIR / "models")):
+            return True
+        megabytes = model_download_mb(chosen)
+        if messagebox.askyesno(
+                "需要先下载模型",
+                f"“{chosen}”这台电脑上还没有，需要联网下载约 {megabytes} MB。\n\n"
+                "只下这一次，以后再用就不用下了。中途断网也不要紧，下次接着下。\n\n"
+                "现在开始下载吗？"):
+            return True
+        self.log(f"已取消：“{chosen}”模型还没下载。可以把“识别模型”换成本机已有的模型。")
+        return False
+
     def start_job(self, mode):
         if self.busy:
             return
@@ -834,6 +871,8 @@ class Application(tk.Tk):
         needs_asr = not (self.project or {}).get("recognition_complete") and Path(self.source_var.get()).suffix.lower() != ".srt"
         if needs_asr and local and not (Path(local) / "model.bin").is_file():
             messagebox.showerror("模型目录", "本地模型文件夹中没有 model.bin。请选择完整的 faster-whisper 模型，或清空该字段自动下载。")
+            return
+        if needs_asr and not local and not self.confirm_model_download():
             return
         self.save_settings()
         effective_mode = "transcribe" if self.pending_translate else mode
@@ -971,6 +1010,7 @@ class Application(tk.Tk):
                     self.force_var.set(False)
                     self.alert_when_finished(value)
                     self.announce_axis_review()
+                    self.refresh_model_hint()
                 elif kind in ("error", "cancelled"):
                     self.seen_terminal = True
                     self.last_job_ok = False

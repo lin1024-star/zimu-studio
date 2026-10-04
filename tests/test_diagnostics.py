@@ -145,7 +145,8 @@ class DiagnosticTests(unittest.TestCase):
                 return iter([SimpleNamespace(start=0, end=2, text="Hello world.", words=[])]), SimpleNamespace(language="en", duration=2)
         modules = {"faster_whisper": SimpleNamespace(WhisperModel=Model),
                    "onnxruntime": SimpleNamespace(disable_telemetry_events=lambda: None)}
-        with patch.dict(sys.modules, modules):
+        # 这个用例只关心诊断字段，不该顺手去网上拉一个几 GB 的模型：把模型准备这一步打桩。
+        with patch.dict(sys.modules, modules), patch.object(core, "prepare_model", return_value="turbo"):
             cues, language = core._transcribe_once(self.root / "fixture.mp4", "turbo", "en", "cuda", self.root,
                                                    threading.Event(), lambda k, v: events.append((k, v)))
         self.assertEqual([v for k, v in events if k == "phase"], ["model_loading", "audio_preprocessing", "inference"])
