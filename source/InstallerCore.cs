@@ -126,7 +126,29 @@ namespace SubtitleEasy {
     }
     internal static class Installer {
         public const string Version="1.6.0";
-        public static string DataRoot {get{return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"SubtitleStudio");}}
+        public const string RegistryKey="Software\\SubtitleStudio";
+        public static string DefaultRoot {get{return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"SubtitleStudio");}}
+        public static string ConfiguredRoot {
+            get {
+                try{using(var key=Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RegistryKey)){if(key!=null){string v=Convert.ToString(key.GetValue("Root")??"");if(!String.IsNullOrEmpty(v)&&Path.IsPathRooted(v))return Path.GetFullPath(v);}}}catch{}
+                return DefaultRoot;
+            }
+            set {Directory.CreateDirectory(value);using(var key=Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RegistryKey)){if(key!=null)key.SetValue("Root",Path.GetFullPath(value));}}
+        }
+        public static string DataRoot {
+            get {
+                // 装好的启动器就在 <根目录>\Easy\SubtitleStudio.exe：按自身位置定位最可靠，
+                // 这样整个安装可以放在任意盘符，不依赖注册表。分发包从别处运行时才回退到注册表 / 默认值。
+                try{
+                    string dir=Path.GetDirectoryName(Path.GetFullPath(Assembly.GetExecutingAssembly().Location));
+                    if(!String.IsNullOrEmpty(dir)&&String.Equals(Path.GetFileName(dir),"Easy",StringComparison.OrdinalIgnoreCase)){
+                        string parent=Path.GetDirectoryName(dir);
+                        if(!String.IsNullOrEmpty(parent))return parent;
+                    }
+                }catch{}
+                return ConfiguredRoot;
+            }
+        }
         public static string Root {get{return Path.Combine(DataRoot,"Easy");}}
         public static string App {get{return Path.Combine(Root,"app-"+Version);}}
         public static string PythonRoot {get{return Path.Combine(Root,"python-3.13.15");}}
@@ -190,7 +212,7 @@ namespace SubtitleEasy {
         static void Shortcut(){
             string desktop=Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);Directory.CreateDirectory(desktop);object shell=null,link=null;
             try{shell=Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));link=shell.GetType().InvokeMember("CreateShortcut",BindingFlags.InvokeMethod,null,shell,new[]{Path.Combine(desktop,"字幕工坊.lnk")});Set(link,"TargetPath",Path.Combine(Root,"SubtitleStudio.exe"));Set(link,"Arguments","--launch");Set(link,"WorkingDirectory",Root);Set(link,"Description","字幕工坊：本地识别、字幕翻译与校对");link.GetType().InvokeMember("Save",BindingFlags.InvokeMethod,null,link,null);}
-            catch{File.WriteAllText(Path.Combine(desktop,"字幕工坊.cmd"),"@echo off\r\nstart \"\" \"%LOCALAPPDATA%\\SubtitleStudio\\Easy\\SubtitleStudio.exe\" --launch\r\n",Encoding.ASCII);}
+            catch{File.WriteAllText(Path.Combine(desktop,"字幕工坊.cmd"),"@echo off\r\nstart \"\" \""+Path.Combine(Root,"SubtitleStudio.exe")+"\" --launch\r\n",Encoding.ASCII);}
             finally{if(link!=null)Marshal.FinalReleaseComObject(link);if(shell!=null)Marshal.FinalReleaseComObject(shell);}
         }
         public static bool Installed {get{return File.Exists(Ready)&&File.Exists(Python)&&File.Exists(Path.Combine(App,"start_app.py"));}}
