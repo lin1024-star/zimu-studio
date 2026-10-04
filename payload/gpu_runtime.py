@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 from core import Cancelled, UserError, check_cancel
+from paths import data_root
 
 MANIFEST = json.loads(Path(__file__).with_name("gpu_manifest.json").read_text("utf-8"))
 _HANDLES = []
@@ -30,7 +31,7 @@ class SetupError(UserError):
 
 
 def cache_root():
-    return Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share")) / "SubtitleStudio" / "gpu-runtime"
+    return data_root() / "gpu-runtime"
 
 
 def file_hash(path, stop=None):

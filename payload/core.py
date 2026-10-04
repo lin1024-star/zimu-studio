@@ -14,9 +14,10 @@ from dataclasses import asdict, dataclass
 from collections import Counter, defaultdict, deque
 from bisect import bisect_right
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from diagnostics import error_info
+from paths import data_root
 
 APP_VERSION = "1.6.0"
 DEFAULT_MODEL = "deepseek-flash"
@@ -975,9 +976,10 @@ def translate_project(path, project, key, model, glossary, stop, emit, force=Fal
 
 # 官方价格（人民币，元/百万 tokens，按“缓存未命中”的输入价估算）。
 # 峰谷规则：空闲时段单价 = 高峰时段的一半；
-# 高峰 = 北京时间周一至周五（不含中国法定节假日）9:00-12:00 与 14:00-18:00，
-# 其余时段（含周末与中国法定节假日全天）都是空闲时段。
-# 法定节假日无法离线判断，这里按“工作日 = 有高峰”处理：真正的节假日只会比估算更便宜。
+# 高峰 = 北京时间周一至周五（不含中国法定节假日）9:00-12:00 与 14:00-18:00。
+# “其余时段，包括周末及中国法定节假日全天均为空闲时段”，所以：
+#   · 周末一律空闲——包括调休上班的周末（DeepSeek 已明确调休上班的周末也按空闲计费）；
+#   · 法定节假日落在工作日时同样全天空闲，必须单独查表，不能只看星期几。
 # 官方价格可能调整，最终以 DeepSeek 账单为准。
 PRICE_CNY = {
     "deepseek-flash": {"peak": (2.0, 8.0), "off": (1.0, 4.0)},
@@ -986,8 +988,31 @@ PRICE_CNY = {
 # 认不出的模型名一律按表里最贵的一档估算：宁可高估也不要让使用者低估账单。
 FALLBACK_PRICE_KEY = "deepseek-v4-pro"
 PEAK_WINDOWS_MINUTES = ((9 * 60, 12 * 60), (14 * 60, 18 * 60))
-PRICING_RULE = ("DeepSeek 按峰谷计费：北京时间周一至周五 9:00-12:00、14:00-18:00 为高峰时段，"
-                "其余时段（含周末与中国法定节假日全天）为空闲时段，空闲单价是高峰的一半。")
+PRICING_RULE = ("DeepSeek 按峰谷计费：北京时间周一至周五（不含中国法定节假日）9:00-12:00、"
+                "14:00-18:00 为高峰时段；其余时段，包括周末及中国法定节假日全天，均为空闲时段。"
+                "空闲时段单价为高峰时段价格的一半；调休上班的周末同样按空闲时段计费。")
+
+# 中国法定节假日放假安排，逐日列出（含调休放假的周末，那几天本来就是周末）。
+# 来源：国务院办公厅关于 2026 年部分节假日安排的通知（国办发明电〔2025〕7 号）。
+CN_HOLIDAY_RANGES = (
+    ("2026-01-01", 3),   # 元旦：1/1（四）—1/3（六）
+    ("2026-02-15", 9),   # 春节：2/15（日）—2/23（一）
+    ("2026-04-04", 3),   # 清明节：4/4（六）—4/6（一）
+    ("2026-05-01", 5),   # 劳动节：5/1（五）—5/5（二）
+    ("2026-06-19", 3),   # 端午节：6/19（五）—6/21（日）
+    ("2026-09-25", 3),   # 中秋节：9/25（五）—9/27（日）
+    ("2026-10-01", 7),   # 国庆节：10/1（四）—10/7（三）
+)
+CN_HOLIDAYS = frozenset(
+    (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=offset)).strftime("%Y-%m-%d")
+    for start, count in CN_HOLIDAY_RANGES for offset in range(count))
+CN_HOLIDAY_YEARS = frozenset(int(start[:4]) for start, _ in CN_HOLIDAY_RANGES)
+
+
+def holiday_coverage(now=None):
+    """返回 (该年的放假安排是否已收录, 已收录年份的文字)。没收录时必须如实告知使用者。"""
+    year = (now or datetime.now()).year
+    return year in CN_HOLIDAY_YEARS, "、".join(str(y) for y in sorted(CN_HOLIDAY_YEARS))
 
 
 def price_for(model):
@@ -999,10 +1024,15 @@ def price_for(model):
 
 
 def pricing_period(now=None):
-    """返回 (现在是否高峰时段, 说明文字)。now 默认取本机时间（北京时间）。"""
+    """返回 (现在是否高峰时段, 说明文字)。now 默认取本机时间（北京时间）。
+
+    顺序要紧：先看法定节假日，再看周末，最后才看星期几与时段。
+    """
     now = now or datetime.now()
+    if now.strftime("%Y-%m-%d") in CN_HOLIDAYS:
+        return False, "今天是中国法定节假日，全天按空闲时段计费"
     if now.weekday() >= 5:
-        return False, "现在是周末，全天按空闲时段计费"
+        return False, "今天是周末，全天按空闲时段计费"
     minutes = now.hour * 60 + now.minute
     if any(start <= minutes < end for start, end in PEAK_WINDOWS_MINUTES):
         return True, "现在是工作日高峰时段"
@@ -1039,9 +1069,11 @@ def estimate_cost(cues, model, force=False, now=None):
     peak = input_tokens / 1_000_000 * prices["peak"][0] + output_tokens / 1_000_000 * prices["peak"][1]
     off = input_tokens / 1_000_000 * prices["off"][0] + output_tokens / 1_000_000 * prices["off"][1]
     is_peak, period_note = pricing_period(now)
+    covered, years = holiday_coverage(now)
     return {"count": len(pending), "input_tokens": input_tokens, "output_tokens": output_tokens,
             "peak_cost": peak, "off_cost": off, "model_known": model_known,
-            "is_peak": is_peak, "period_note": period_note}
+            "is_peak": is_peak, "period_note": period_note,
+            "holiday_covered": covered, "holiday_years": years}
 
 
 def cost_message(estimate, model):
@@ -1057,6 +1089,9 @@ def cost_message(estimate, model):
              + ("（可省一半）" if estimate["is_peak"] else "")]
     if not estimate["model_known"]:
         lines += ["", f"注意：模型“{model}”不在内置价格表里，这里按最贵的一档估算，实际可能更低。"]
+    if not estimate["holiday_covered"]:
+        lines += ["", f"注意：内置的放假安排只覆盖 {estimate['holiday_years']} 年，"
+                      "遇到未收录年份的法定节假日，可能被按高峰估算（实际会更便宜）。"]
     lines += ["", "估算仅供参考，实际费用以 DeepSeek 官方账单为准。必须确认后才会开始翻译。"]
     return "\n".join(lines)
 

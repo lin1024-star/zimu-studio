@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -176,16 +177,55 @@ class CoreTests(unittest.TestCase):
 
     def test_pricing_period_follows_the_official_peak_windows(self):
         from core import pricing_period
-        monday = datetime(2026, 10, 5, 10, 0)          # 2026-10-05 是周一
+        monday = datetime(2026, 3, 2, 10, 0)          # 2026-03-02 周一，且不在任何假期里
         self.assertEqual(monday.weekday(), 0)
         self.assertTrue(pricing_period(monday)[0])                        # 周一 10:00 高峰
-        self.assertTrue(pricing_period(datetime(2026, 10, 5, 14, 30))[0])  # 14:00-18:00 高峰
-        self.assertFalse(pricing_period(datetime(2026, 10, 5, 12, 0))[0])  # 12:00 起空闲
-        self.assertFalse(pricing_period(datetime(2026, 10, 5, 18, 0))[0])  # 18:00 起空闲
-        self.assertFalse(pricing_period(datetime(2026, 10, 5, 8, 59))[0])
-        saturday = datetime(2026, 10, 10, 10, 0)
+        self.assertTrue(pricing_period(datetime(2026, 3, 2, 14, 30))[0])   # 14:00-18:00 高峰
+        self.assertFalse(pricing_period(datetime(2026, 3, 2, 12, 0))[0])   # 12:00 起空闲
+        self.assertFalse(pricing_period(datetime(2026, 3, 2, 18, 0))[0])   # 18:00 起空闲
+        self.assertFalse(pricing_period(datetime(2026, 3, 2, 8, 59))[0])
+        saturday = datetime(2026, 3, 7, 10, 0)
         self.assertEqual(saturday.weekday(), 5)
         self.assertFalse(pricing_period(saturday)[0])                     # 周末全天空闲
+
+    def test_public_holidays_on_weekdays_are_off_peak(self):
+        # 法定节假日落在工作日时，DeepSeek 全天按空闲计费；只看星期几会把它算成高峰。
+        from core import pricing_period
+        for stamp in ("2026-01-01", "2026-01-02", "2026-02-16", "2026-02-17", "2026-02-23",
+                      "2026-04-06", "2026-05-01", "2026-05-04", "2026-05-05",
+                      "2026-06-19", "2026-09-25", "2026-10-01", "2026-10-02",
+                      "2026-10-05", "2026-10-06", "2026-10-07"):
+            moment = datetime.strptime(stamp + " 10:00", "%Y-%m-%d %H:%M")
+            self.assertLess(moment.weekday(), 5, stamp + " 应当是工作日")
+            self.assertFalse(pricing_period(moment)[0], stamp + " 是法定节假日，应为空闲")
+        after = datetime(2026, 10, 8, 10, 0)          # 国庆假期结束后的周四
+        self.assertEqual(after.weekday(), 3)
+        self.assertTrue(pricing_period(after)[0])
+
+    def test_makeup_workdays_on_weekends_stay_off_peak(self):
+        # 调休上班的周末仍然是周末，DeepSeek 明确按空闲计费。
+        from core import pricing_period
+        for stamp in ("2026-01-04", "2026-02-14", "2026-02-28",
+                      "2026-05-09", "2026-09-20", "2026-10-10"):
+            moment = datetime.strptime(stamp + " 10:00", "%Y-%m-%d %H:%M")
+            self.assertGreaterEqual(moment.weekday(), 5, stamp + " 应当是周末")
+            self.assertFalse(pricing_period(moment)[0], stamp + " 是调休上班的周末，仍按空闲计费")
+
+    def test_holiday_coverage_admits_which_years_are_known(self):
+        from core import holiday_coverage
+        self.assertTrue(holiday_coverage(datetime(2026, 10, 1))[0])
+        covered, years = holiday_coverage(datetime(2029, 10, 1))
+        self.assertFalse(covered)                     # 没收录就必须承认，不能假装知道
+        self.assertIn("2026", years)
+
+    def test_displayed_rule_keeps_the_official_wording(self):
+        # 官方原文里的“（不含中国法定节假日）”必须保留：漏掉它就等于改了政策。
+        from core import PRICING_RULE
+        self.assertIn("周一至周五（不含中国法定节假日）", PRICING_RULE)
+        self.assertIn("9:00-12:00", PRICING_RULE)
+        self.assertIn("14:00-18:00", PRICING_RULE)
+        self.assertIn("包括周末及中国法定节假日全天", PRICING_RULE)
+        self.assertIn("一半", PRICING_RULE)
 
     def test_cost_message_shows_both_peak_and_off_peak_prices(self):
         from core import cost_message, estimate_cost
@@ -197,6 +237,16 @@ class CoreTests(unittest.TestCase):
         self.assertNotIn("不在内置价格表", text)
         unknown = cost_message(estimate_cost(cues, "some-unlisted-model"), "some-unlisted-model")
         self.assertIn("不在内置价格表", unknown)      # 认不出的模型必须说清楚按哪档估的
+
+    def test_cost_message_admits_when_the_holiday_calendar_does_not_cover_the_year(self):
+        from core import cost_message, estimate_cost
+        cues = [asdict(Cue(1, 0.0, 1.0, "こんにちは世界"))]
+        future = datetime(2029, 6, 4, 10, 0)
+        text = cost_message(estimate_cost(cues, "deepseek-flash", now=future), "deepseek-flash")
+        self.assertIn("只覆盖 2026 年", text)
+        known = cost_message(estimate_cost(cues, "deepseek-flash", now=datetime(2026, 6, 4, 10, 0)),
+                             "deepseek-flash")
+        self.assertNotIn("只覆盖", known)
 
     def test_unlisted_model_falls_back_to_the_most_expensive_tier(self):
         from core import PRICE_CNY, estimate_cost, FALLBACK_PRICE_KEY

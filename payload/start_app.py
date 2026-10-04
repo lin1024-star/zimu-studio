@@ -6,9 +6,11 @@ import os
 import sys
 import traceback
 
+from paths import data_root
+
 
 def main():
-    root = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "SubtitleStudio"
+    root = data_root()
     root.mkdir(parents=True, exist_ok=True)
     lock = None
     try:

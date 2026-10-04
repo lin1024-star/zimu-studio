@@ -11,9 +11,10 @@ import json
 import os
 
 from core import atomic_write
+from paths import data_root
 
 SECRET_FILE = "api_key.dpapi"
-DATA_ROOT = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "SubtitleStudio"
+DATA_ROOT = data_root()
 
 
 class _DATA_BLOB(ctypes.Structure):

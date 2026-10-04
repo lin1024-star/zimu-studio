@@ -22,9 +22,10 @@ from core import (APP_VERSION, DEFAULT_MODEL, Cue, UserError, atomic_write, clea
                   default_export_keys, default_export_selection, export_choices, should_alert)
 from diagnostics import Diagnostics, error_info
 from dialogs import AddCueDialog, DurationDialog, ExportDialog, SrtImportDialog
+from paths import data_root
 
 APP_DIR = Path(__file__).resolve().parent
-USER_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share")) / "SubtitleStudio"
+USER_DIR = data_root()
 CONFIG_PATH = USER_DIR / "settings.json"
 FONT_FAMILY = "Microsoft YaHei UI" if sys.platform == "win32" else "Noto Sans CJK SC"
 BG, PANEL, INK, MUTED, ACCENT = "#edf2f6", "#ffffff", "#182d41", "#5f7385", "#137b83"

@@ -9,7 +9,9 @@ import shutil
 import sys
 import threading
 
-ROOT = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "SubtitleStudio"
+from paths import data_root
+
+ROOT = data_root()
 
 
 def initialize_settings(model, gpu=False):
