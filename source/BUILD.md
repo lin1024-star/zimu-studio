@@ -1,4 +1,4 @@
-# 字幕工坊 1.6 构建说明
+# 字幕工坊 2.0 构建说明
 
 普通使用请返回上一级，打开「字幕工坊_安装与启动.exe」。无需阅读本文件或运行源码。
 
@@ -40,7 +40,7 @@ tests/CompatibilityAudit.cs 对编译产物做 String.Split/Trim 家族的 IL �
 
 ## 下载与安装目录
 
-- 主程序：%LOCALAPPDATA%\SubtitleStudio\Easy\app-1.6.0
+- 主程序：%LOCALAPPDATA%\SubtitleStudio\Easy\app-<版本>（安装根目录可用注册表 HKCU\Software\SubtitleStudio 的 Root 覆盖）
 - 独立 Python：同目录上级的 python-3.13.15
 - 安装缓存：%LOCALAPPDATA%\SubtitleStudio\Easy\cache
 - 已准备模型：%LOCALAPPDATA%\SubtitleStudio\models\prepared\small 或 turbo

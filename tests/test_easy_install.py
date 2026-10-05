@@ -72,7 +72,7 @@ class EasyInstallTests(unittest.TestCase):
         self.assertNotIn('PRIVATE_SOURCE', report)
         self.assertNotIn('sk-CANARY', report)
         self.assertNotIn(str(self.root), report)
-        self.assertEqual(json.loads(report)['app_version'], '1.6.1')
+        self.assertEqual(json.loads(report)['app_version'], '2.0')
 
 
 REPO = Path(__file__).resolve().parents[1]

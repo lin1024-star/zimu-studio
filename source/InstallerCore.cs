@@ -36,7 +36,7 @@ namespace SubtitleEasy {
         }
         public static Reply Open(string url,long offset,CancellationToken token){
             ServicePointManager.SecurityProtocol|=SecurityProtocolType.Tls12;
-            var request=(HttpWebRequest)WebRequest.Create(url);request.Timeout=30000;request.ReadWriteTimeout=30000;request.UserAgent="SubtitleStudio-Easy/1.6";request.AllowAutoRedirect=true;request.MaximumAutomaticRedirections=12;request.Headers["Accept-Encoding"]="identity";if(offset>0)request.AddRange(offset);
+            var request=(HttpWebRequest)WebRequest.Create(url);request.Timeout=30000;request.ReadWriteTimeout=30000;request.UserAgent="SubtitleStudio-Easy/2.0";request.AllowAutoRedirect=true;request.MaximumAutomaticRedirections=12;request.Headers["Accept-Encoding"]="identity";if(offset>0)request.AddRange(offset);
             var registration=token.Register(request.Abort);
             try{var response=(HttpWebResponse)request.GetResponse();if(response.ResponseUri.Scheme!="https"){response.Dispose();throw new IOException("下载地址没有提供 HTTPS。");}return new Reply{Body=response.GetResponseStream(),Status=(int)response.StatusCode,Range=response.Headers["Content-Range"]??"",Response=response,Registration=registration};}catch{registration.Dispose();token.ThrowIfCancellationRequested();throw;}
         }
@@ -125,7 +125,7 @@ namespace SubtitleEasy {
         }
     }
     internal static class Installer {
-        public const string Version="1.6.1";
+        public const string Version="2.0";
         public const string RegistryKey="Software\\SubtitleStudio";
         public static string DefaultRoot {get{return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"SubtitleStudio");}}
         public static string ConfiguredRoot {

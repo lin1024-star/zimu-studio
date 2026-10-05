@@ -15,7 +15,7 @@ namespace SubtitleEasy {
         readonly Label status=new Label(),description=new Label();readonly ProgressBar progress=new ProgressBar();readonly TextBox logs=new TextBox();
         CancellationTokenSource cancellation;bool busy,closeAfter;
         public SetupForm(){
-            Text="字幕工坊 · 懒人安装与启动 1.6.1";Font=new Font("Microsoft YaHei UI",9F);ClientSize=new Size(890,690);MinimumSize=new Size(850,650);StartPosition=FormStartPosition.CenterScreen;BackColor=Color.FromArgb(243,247,249);AutoScaleMode=AutoScaleMode.Dpi;
+            Text="字幕工坊 · 懒人安装与启动 2.0";Font=new Font("Microsoft YaHei UI",9F);ClientSize=new Size(890,690);MinimumSize=new Size(850,650);StartPosition=FormStartPosition.CenterScreen;BackColor=Color.FromArgb(243,247,249);AutoScaleMode=AutoScaleMode.Dpi;
             var root=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(24,20,24,18),ColumnCount=1,RowCount=9};Controls.Add(root);
             foreach(int h in new[]{42,40,135,45,58,32})root.RowStyles.Add(new RowStyle(SizeType.Absolute,h));root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.Absolute,46));root.RowStyles.Add(new RowStyle(SizeType.Absolute,35));
             root.Controls.Add(new Label{Text="字幕工坊 · 一键准备",AutoSize=true,Font=new Font(Font.FontFamily,21,FontStyle.Bold),ForeColor=Color.FromArgb(21,61,70)},0,0);
@@ -30,7 +30,7 @@ namespace SubtitleEasy {
             var support=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=false,Margin=new Padding(0,10,0,0)};root.Controls.Add(support,0,7);support.Controls.Add(NewButton("小白指南 / 常见问题",182,(s,e)=>{try{Installer.Guide();}catch(Exception ex){Error(ex.Message);}}));SetupButton(export,"导出安装诊断",145,ExportClick);support.Controls.Add(export);support.Controls.Add(NewButton("打开安装目录",142,(s,e)=>{Directory.CreateDirectory(Installer.Root);Process.Start(new ProcessStartInfo(Installer.Root){UseShellExecute=true});}));support.Controls.Add(NewButton("DeepSeek 官方平台",178,(s,e)=>Process.Start(new ProcessStartInfo("https://platform.deepseek.com/"){UseShellExecute=true})));
             root.Controls.Add(new Label{Text="安装不需要 API 密钥。翻译时再填朋友自己的密钥，费用由其 API 账户结算；识别与校对不调用翻译 API。",AutoSize=true,ForeColor=Color.FromArgb(80,99,112),Margin=new Padding(0,9,0,0)},0,8);
             if(Installer.HasNvidiaGpu()){gpu.Checked=true;Append("检测到 NVIDIA 显卡，已自动勾选“显卡加速”；不需要可以取消。");}
-            RefreshMode();RefreshInstalled();Append("字幕工坊懒人版 1.6.1；完整程序，保留 SRT 导入、校对、加字幕、打轴和六份导出。");FormClosing+=ClosingForm;
+            RefreshMode();RefreshInstalled();Append("字幕工坊懒人版 2.0；完整程序，保留 SRT 导入、校对、加字幕、打轴和六份导出。");FormClosing+=ClosingForm;
         }
         static void SetupButton(Button b,string text,int width,EventHandler action){b.Text=text;b.Width=width;b.Height=34;b.Margin=new Padding(0,0,9,0);b.Click+=action;}
         static Button NewButton(string text,int width,EventHandler action){var b=new Button();SetupButton(b,text,width,action);return b;}
