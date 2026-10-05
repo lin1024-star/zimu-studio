@@ -173,9 +173,36 @@ namespace SubtitleEasy {
             progress.Report(new Update("需要补齐 Windows 运行库。如果系统弹出权限窗口，请确认发布者为 Microsoft 后选择“是”。"));log("正在运行 Microsoft VC++ 安装器；不更改杀毒设置。");
             token.ThrowIfCancellationRequested();using(var p=Process.Start(new ProcessStartInfo(exe,"/install /passive /norestart"){UseShellExecute=true,Verb="runas"})){if(p==null)throw new IOException("Windows 运行库安装器未启动。");p.WaitForExit();if(p.ExitCode!=0&&p.ExitCode!=3010&&p.ExitCode!=1638)throw new IOException("Windows 运行库未安装完成，返回码 "+p.ExitCode+"。请看小白指南的 DLL 错误一节。");if(p.ExitCode==3010)log("Windows 运行库建议重启电脑。若下一步仍提示 DLL，请重启后再次点安装按钮。");}token.ThrowIfCancellationRequested();
         }
+        // 主程序用 application.lock 表示"正在运行"：能独占打开就说明没在跑。
+        // 打开失败有两种：被占用（IOException），以及访问被拒（UnauthorizedAccessException
+        // ——杀毒软件正在扫描、文件属性异常、删除挂起都会给这个）。原实现只接了 IOException，
+        // 于是软件明明开着、却弹出原始的"访问被拒绝"，使用者完全不知道该怎么办，也无法自行排查。
+        // 两种都接；重试几次以跨过瞬时占用；仍失败就把文件属性与真实异常写进安装日志，
+        // 下次再遇到能直接看出是占用还是权限，不用再猜。
+        internal static void EnsureAppClosed(string appLock,CancellationToken token,Action<string> log){
+            if(!File.Exists(appLock)){Note(log,"未发现 application.lock，跳过运行状态检查。");return;}
+            Exception last=null;
+            for(int attempt=1;attempt<=3;attempt++){
+                token.ThrowIfCancellationRequested();
+                try{
+                    using(File.Open(appLock,FileMode.Open,FileAccess.ReadWrite,FileShare.None)){}
+                    Note(log,"application.lock 可以独占打开，字幕工坊未在运行。");
+                    return;
+                }catch(IOException e){last=e;}catch(UnauthorizedAccessException e){last=e;}
+                if(attempt<3)Thread.Sleep(700);
+            }
+            string attrs="未知";try{attrs=File.GetAttributes(appLock).ToString();}catch{}
+            Note(log,"application.lock 检查失败（已重试 3 次）："+last.GetType().Name+"："+last.Message);
+            Note(log,"  文件路径："+appLock);
+            Note(log,"  文件属性："+attrs);
+            throw new IOException("字幕工坊仍在运行，或 application.lock 暂时打不开。请保存项目并完全关闭字幕工坊"
+                +"（包括托盘图标，以及正在进行的识别 / 翻译），等几秒后再点安装 / 修复。"
+                +"若确认已经关闭仍报同样的错，请点“导出安装诊断”，把 ZIP 发来。",last);
+        }
+        static void Note(Action<string> log,string message){if(log!=null){try{log(message);}catch{}}}
         public static void Install(string model,bool gpu,bool mirror,CancellationToken token,IProgress<Update> progress,Action<string> log){
             if(!new[]{"small","turbo","tiny","srt"}.Contains(model))throw new ArgumentException("安装模式无效。");
-            token.ThrowIfCancellationRequested();string appLock=Path.Combine(DataRoot,"application.lock");if(File.Exists(appLock)){try{using(File.Open(appLock,FileMode.Open,FileAccess.ReadWrite,FileShare.None)){} }catch(IOException){throw new IOException("字幕工坊仍在运行。请保存项目并关闭字幕工坊主窗口，再点安装 / 修复。");}}
+            token.ThrowIfCancellationRequested();EnsureAppClosed(Path.Combine(DataRoot,"application.lock"),token,log);
             Directory.CreateDirectory(Root);var drive=new DriveInfo(Path.GetPathRoot(Root));long need=model=="turbo"?7L*1000000000:model=="small"?3L*1000000000:model=="tiny"?15L*100000000:500L*1000000;
             if(drive.AvailableFreeSpace<need)throw new IOException("安装所在磁盘空间不足。此模式请预留约 "+(need/1000000000.0).ToString("0.0")+" GB 后重试；已有 SRT 可先选择仅字幕模式。");
             if(File.Exists(Ready))File.Delete(Ready); // A cancelled repair must not remain marked as complete.
