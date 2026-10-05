@@ -75,5 +75,38 @@ class EasyInstallTests(unittest.TestCase):
         self.assertEqual(json.loads(report)['app_version'], '1.6.1')
 
 
+REPO = Path(__file__).resolve().parents[1]
+
+
+class AttributionTests(unittest.TestCase):
+    """署名与第三方组件说明必须随包附带，不能被悄悄改掉。"""
+
+    def text(self, name):
+        return (REPO / name).read_text(encoding='utf-8-sig')
+
+    def test_author_is_credited_in_shipped_files(self):
+        for name in ('LICENSE.txt', 'THIRD_PARTY.txt', 'README.md'):
+            self.assertIn('lin1024-star', self.text(name), name)
+
+    def test_vocal_separation_model_is_attributed_to_uvr(self):
+        for name in ('THIRD_PARTY.txt', 'payload/关于本软件.txt'):
+            text = self.text(name)
+            self.assertIn('Kim_Vocal_2', text, name)
+            self.assertIn('Ultimate Vocal Remover', text, name)
+            self.assertIn('ultimatevocalremovergui', text, name)
+
+    def test_in_app_about_text_states_author_and_free_use(self):
+        about = self.text('payload/关于本软件.txt')
+        self.assertIn('lin1024-star', about)
+        self.assertIn('心非', about)
+        self.assertIn('不收费', about)
+
+    def test_about_text_is_reachable_from_the_window(self):
+        app = self.text('payload/app.py')
+        self.assertIn('def open_about', app)
+        self.assertIn('self.open_about()', app)
+        self.assertIn('关于与署名', app)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -2,6 +2,8 @@
 
 把听不懂的视频，变成可以校对的中文字幕——双击就能用。
 
+作者：[lin1024-star](https://github.com/lin1024-star)（心非）· 免费公开使用，不收费、不出售
+
 **👉 [点这里下载最新版](https://github.com/lin1024-star/zimu-studio/releases/latest)**
 
 > **【在哪下载】** 打开页面后**一直往下滚到最底部**，找到 **Assets** 这一段，点里面那个**带文件大小、以 `.zip` 结尾**的文件（例如 `zimu-studio-1.6.0.zip`）。
@@ -66,4 +68,4 @@ tests/      安装器与核心逻辑测试（Python 176 项 + C# 23 项）
 
 ## 许可
 
-本项目代码与文档采用 MIT 协议（`LICENSE.txt`）。Python 运行时、第三方 wheel 与语音模型在安装时从各自官方渠道下载，保留其自身许可，详见 `THIRD_PARTY.txt`。
+本项目代码与文档采用 MIT 协议（`LICENSE.txt`），作者 lin1024-star（心非）。Python 运行时、第三方 wheel 与语音识别模型在安装时从各自官方渠道下载，保留其自身许可。随包附带的人声分离模型 Kim_Vocal_2 来自 Ultimate Vocal Remover (UVR) 项目，按其要求署名并致谢；完整清单见 `THIRD_PARTY.txt`，软件内点标题栏版本号可查看中文说明。

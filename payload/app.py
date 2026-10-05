@@ -103,6 +103,14 @@ CPU 模式可直接使用。NVIDIA 显卡请先点击“启用显卡加速”：
 诊断包记录版本、阶段、模型实际设备、错误类别与代码位置；不含密钥、字幕正文、术语表、项目或完整文件路径，也不会自动上传。
 驱动不提供的指标会显示「未取得」，不代表 0；整卡显存包含其他程序，程序工作集合计可能重复共享页。
 日志自动轮换并清理较旧记录。诊断功能只记录情况，不改变识别精度，也不会自动降低 CPU 或内存占用。
+
+关于与署名
+
+本软件作者：lin1024-star（心非）。主页与源码：https://github.com/lin1024-star/zimu-studio
+本软件免费公开给朋友使用，不收费、不出售；代码为 MIT 许可。
+点击标题栏右侧的版本号，可以打开完整的作者与第三方组件说明。
+人声分离模型 Kim_Vocal_2 来自 Ultimate Vocal Remover (UVR) 项目，开发者 Anjok07、aufr33 等。UVR 要求使用其模型的第三方开发者署名，在此致谢。
+其余第三方组件与许可证清单见安装包内的 THIRD_PARTY.txt。
 """
 
 
@@ -235,7 +243,9 @@ class Application(tk.Tk):
         header.pack(fill="x")
         ttk.Label(header, text="字幕工坊", style="Title.TLabel").pack(side="left")
         ttk.Label(header, text="  本地识别 · DeepSeek 翻译 · PR 字幕与文稿", style="Muted.TLabel").pack(side="left", padx=12, pady=(8, 0))
-        ttk.Label(header, text="v" + APP_VERSION, style="Muted.TLabel").pack(side="right")
+        credit = ttk.Label(header, text="v" + APP_VERSION + " · lin1024-star（心非）", style="Muted.TLabel", cursor="hand2")
+        credit.pack(side="right", padx=(8, 0))
+        credit.bind("<Button-1>", lambda _event: self.open_about())
         self.button(header, "导出诊断包", self.export_diagnostics, busy=False, side="right", padx=10)
         self.button(header, "小白指南", self.open_easy_guide, busy=False, side="right")
         self.notebook = ttk.Notebook(self)
@@ -440,6 +450,27 @@ class Application(tk.Tk):
                 except OSError:
                     pass
         webbrowser.open(guide.as_uri())
+
+    def open_about(self):
+        """作者署名与第三方组件说明；随包附带时用系统默认程序打开。"""
+        about = APP_DIR / "关于本软件.txt"
+        if about.is_file():
+            try:
+                os.startfile(about)
+                return
+            except (AttributeError, OSError):
+                import webbrowser
+                webbrowser.open(about.as_uri())
+                return
+        messagebox.showinfo(
+            "关于本软件",
+            "字幕工坊  v" + APP_VERSION + "\n\n"
+            "作者：lin1024-star（心非）\n"
+            "https://github.com/lin1024-star/zimu-studio\n\n"
+            "本软件免费公开使用。人声分离模型 Kim_Vocal_2 来自 Ultimate Vocal "
+            "Remover (UVR) 项目（开发者 Anjok07、aufr33 等），此处致谢。\n"
+            "完整第三方组件清单见安装包内的 THIRD_PARTY.txt。",
+        )
 
     def log(self, message):
         self.logs.configure(state="normal")

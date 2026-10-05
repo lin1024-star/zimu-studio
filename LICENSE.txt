@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 SubtitleStudio contributors
+Copyright (c) 2026 lin1024-star（心非）
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -21,4 +21,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 Dependencies are downloaded separately by the installer and retain their own
-licenses. This package does not include their binaries or speech model weights.
+licenses. Third-party speech-model weights are downloaded the same way, with one
+exception included in this package: the vocal-separation model Kim_Vocal_2 from
+the Ultimate Vocal Remover (UVR) project, redistributed here with the credit UVR
+asks third-party developers to give. See THIRD_PARTY.txt for the full inventory
+and attribution.

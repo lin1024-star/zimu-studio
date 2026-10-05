@@ -1,0 +1,65 @@
+﻿字幕工坊 SubtitleStudio — 作者与第三方组件说明
+================================================
+
+作者：lin1024-star（心非）
+主页：https://github.com/lin1024-star/zimu-studio
+
+本软件免费公开给朋友使用，不收费、不出售。
+本软件自身的代码是 MIT 许可，源码公开。
+
+
+本软件用了别人做的免费组件和模型，版权归各自作者所有
+----------------------------------------------------
+
+下面是主要的几项，列在这里作为署名。道谢。
+
+
+【人声分离】
+
+  Kim_Vocal_2 —— 把人的说话声和背景音乐、游戏音效分开
+
+  来自 Ultimate Vocal Remover (UVR) 项目
+  开发者：Anjok07、aufr33 等
+  https://github.com/Anjok07/ultimatevocalremovergui
+
+  UVR 的官方说明里写着：使用他们模型的第三方开发者，请遵守 MIT 许可，
+  为 UVR 及其开发者署名。本软件在此署名并致谢。
+
+  MDX-Net 网络结构来自 KUIELab（Woosung Choi 等）
+  https://github.com/kuielab
+
+
+【语音识别】
+
+  faster-whisper（MIT 许可）
+  https://github.com/SYSTRAN/faster-whisper
+
+  CTranslate2（MIT 许可）
+  https://github.com/OpenNMT/CTranslate2
+
+  OpenAI Whisper 语音模型（MIT 许可）
+  https://github.com/openai/whisper
+
+
+【运行环境】
+
+  Python 3.13（PSF 许可）
+  https://www.python.org
+
+  ONNX Runtime（MIT 许可）
+  https://github.com/microsoft/onnxruntime
+
+  PyAV / FFmpeg（BSD / LGPL 许可）
+  https://github.com/PyAV-Org/PyAV
+
+  NVIDIA CUDA 运行库（可选，只有开启显卡加速时才会下载安装，遵循 NVIDIA 许可）
+  https://developer.download.nvidia.com/compute/cuda/redist/
+
+
+说明
+----------------------------------------------------
+
+1. 上面这些组件和模型，版权属于各自的作者，本软件只是使用它们。
+2. 完整的第三方组件清单在安装包根目录的 THIRD_PARTY.txt（英文）。
+3. 本文件用于署名与来源记录，不是法律意见。
+4. 本软件免费提供。如果将来要用于收费服务，需要重新核对各组件的许可条款。
