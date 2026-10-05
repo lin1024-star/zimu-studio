@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "payload"))
-from core import (Cancelled, Cue, DEFAULT_EXPORT_KEYS, DeepSeekClient, ResponseError, UserError,
+from core import (Cancelled, Cue, DEFAULT_EXPORT_KEYS, DeepSeekClient, GLOSSARY_LIMIT, ResponseError, UserError,
                   clean, cues_from_segments, default_export_keys, default_export_selection,
                   export_blank, export_choices, export_files, fingerprint, format_blank_ass,
                   format_blank_srt, format_srt, load_project, read_srt, run_job, save_project,
@@ -659,6 +659,35 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         self.assertFalse(should_alert("translate",True,False,True))      # 正在退出，不弹
         self.assertFalse(should_alert("translate",True,False,False,enabled=False))  # 使用者关了开关
         self.assertFalse(should_alert(None,True,False,False))            # 没有 mode 不猜
+
+
+class GlossaryTests(unittest.TestCase):
+    """术语表必须真的随请求发出去；界面按同一上限提示字数，两边不能各说各话。"""
+
+    def payload_for(self, glossary):
+        captured = {}
+        def transport(body):
+            captured["body"] = body
+            return {"choices": [{"finish_reason": "stop",
+                                 "message": {"content": json.dumps({"translations": [{"id": 1, "text": "优花亲你好"}]})}}],
+                    "usage": {}}
+        client = DeepSeekClient("sk-test", transport=transport)
+        client.translate([Cue(1, 0.0, 1.0, "こんゆかし")], "ja", "", glossary)
+        return json.loads(captured["body"]["messages"][1]["content"])
+
+    def test_glossary_travels_with_every_request(self):
+        glossary = "ゆか = 优花\nこんゆかし = 「优花亲你好」"
+        self.assertEqual(self.payload_for(glossary)["glossary"], glossary)
+
+    def test_empty_glossary_is_fine(self):
+        self.assertEqual(self.payload_for("")["glossary"], "")
+
+    def test_over_long_glossary_is_truncated_rather_than_dropped(self):
+        payload = self.payload_for("あ" * (GLOSSARY_LIMIT + 500))
+        self.assertEqual(len(payload["glossary"]), GLOSSARY_LIMIT)
+
+    def test_limit_is_the_number_the_interface_tells_users(self):
+        self.assertEqual(GLOSSARY_LIMIT, 6000)
 
 
 if __name__ == "__main__":

@@ -683,6 +683,9 @@ ASR_OPTIONS = {
     "condition_on_previous_text": False,
 }
 
+# 术语表随每次翻译请求一起发送，超过这个长度会被截断；界面按同一数值提示字数。
+GLOSSARY_LIMIT = 6000
+
 
 def _transcribe_once(path, model_name, language, device, model_dir, stop, emit):
     import gc
@@ -1200,7 +1203,7 @@ class DeepSeekClient:
             '{"translations":[{"id":1,"text":"译文"}]}. No timestamps in your output. '
             "Preserve speakers' disfluencies only when meaningful. Keep proper names consistent."
         )
-        payload = {"source_language": language, "target_language": "zh-CN", "glossary": glossary[:6000],
+        payload = {"source_language": language, "target_language": "zh-CN", "glossary": glossary[:GLOSSARY_LIMIT],
                    "context_do_not_translate": context,
                    "cues": [{"id": c.id, "text": c.source} for c in cues]}
         body = {"model": self.model, "messages": [{"role": "system", "content": system},

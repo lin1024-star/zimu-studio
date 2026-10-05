@@ -14,7 +14,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from core import (APP_VERSION, DEFAULT_MODEL, Cue, UserError, atomic_write, clean,
+from core import (APP_VERSION, DEFAULT_MODEL, GLOSSARY_LIMIT, Cue, UserError, atomic_write, clean,
                   export_files, import_srt_project, insert_project_cue, load_project,
                   parse_time, read_srt, restore_axis_cues, save_duration_change, save_project, set_project_duration,
                   store_imported_project, timestamp, worker, write_blocked_hint,
@@ -194,21 +194,45 @@ class Application(tk.Tk):
         except (OSError, ValueError):
             return {}
 
+    def refresh_glossary_hint(self, _event=None):
+        """术语表字数实时提示：粘完立刻看见进去了多少，不用猜有没有存上。"""
+        self.glossary.edit_modified(False)
+        count = len(self.glossary.get("1.0", "end-1c").strip())
+        if count > GLOSSARY_LIMIT:
+            self.glossary_hint_var.set("术语表 %d 字，超过 %d 字上限，超出部分不会发给翻译模型" % (count, GLOSSARY_LIMIT))
+        elif count:
+            self.glossary_hint_var.set("术语表 %d 字（上限 %d 字）" % (count, GLOSSARY_LIMIT))
+        else:
+            self.glossary_hint_var.set("术语表未填写（可选，上限 %d 字）" % GLOSSARY_LIMIT)
+
+    def save_settings_clicked(self):
+        """手动保存并给出明确回执；自动保存是静默的，这里让使用者看得见结果。"""
+        count = len(self.glossary.get("1.0", "end-1c").strip())
+        if self.save_settings():
+            messagebox.showinfo("设置已保存", "已保存到本机：\n%s\n\n术语表 %d 字。下次翻译会把它一起发给翻译模型。"
+                                % (CONFIG_PATH, count))
+        else:
+            messagebox.showwarning("设置没有保存成功", "写入本机设置文件失败，多半是磁盘或权限问题。\n"
+                                   "当前填写的术语表仍会在本次运行内有效；建议先不要关闭软件，"
+                                   "在「诊断与资源」导出诊断包查看原因。")
+
     def save_settings(self):
         data = {"output": self.out_var.get(), "language": self.lang_var.get(),
                 "asr_model": self.asr_var.get(), "device": self.device_var.get(),
                 "local_model": self.local_model_var.get(), "model": self.model_var.get(),
-                "glossary": self.glossary.get("1.0", "end-1c"),
+                "glossary": self.glossary.get("1.0", "end-1c").strip(),
                 "ass_style_file": self.ass_style_var.get(), "ass_style_name": self.ass_style_name_var.get(),
                 "alert_when_done": bool(self.alert_var.get()),
                 "tidy_axis": bool(self.tidy_var.get())}
         try:
             atomic_write(CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
+            return True
         except OSError as exc:
             self.log("本机设置未能保存；当前任务仍可继续。")
             hint = write_blocked_hint(exc)
             if hint:
                 self.log(hint)
+            return False
 
     def configure_style(self):
         style = ttk.Style(self)
@@ -383,9 +407,13 @@ class Application(tk.Tk):
         self.busy_controls.append(model_combo)
         ttk.Label(settings, text="可填写账户可用的模型 ID；使用非思考模式翻译。", style="Muted.TLabel").grid(row=4, column=1, sticky="w")
         ttk.Label(settings, text="人名 / 术语说明").grid(row=5, column=0, sticky="nw", pady=10)
+        self.glossary_hint_var = tk.StringVar()
         self.glossary = ScrolledText(settings, height=4, wrap="word", font=(FONT_FAMILY, 10))
         self.glossary.grid(row=5, column=1, columnspan=2, sticky="ew", pady=10)
         self.glossary.insert("1.0", self.settings.get("glossary", ""))
+        self.glossary.edit_modified(False)
+        self.glossary.bind("<<Modified>>", self.refresh_glossary_hint)
+        self.refresh_glossary_hint()
         ttk.Label(settings, text="例如：John Smith = 约翰·史密斯。新设置只用于缺少中文的条目；已有译文会保留。", style="Muted.TLabel").grid(row=6, column=1, columnspan=2, sticky="w")
         force = ttk.Checkbutton(settings, text="重新翻译全部（会重新消耗 API 额度）", variable=self.force_var)
         force.grid(row=7, column=1, sticky="w", pady=10)
@@ -424,6 +452,12 @@ class Application(tk.Tk):
         ttk.Label(settings, text="翻译要跑几分钟到几十分钟；跑完时把窗口拉到前台提醒一次。取消勾选则不打扰，可在状态栏和日志里查看结果。", style="Muted.TLabel").grid(row=21, column=1, columnspan=2, sticky="w")
         ttk.Checkbutton(settings, text="识别后自动整理轴（合并重复、并入语气碎片、修正拖音）", variable=self.tidy_var).grid(row=22, column=0, columnspan=3, sticky="w", pady=(14, 2))
         ttk.Label(settings, text="只动重复文本和时长，不重跑识别、不改变独一无二的内容；整理前的原文会存进项目，随时可还原。", style="Muted.TLabel").grid(row=23, column=1, columnspan=2, sticky="w")
+        save_row = ttk.Frame(settings)
+        save_row.grid(row=24, column=0, columnspan=3, sticky="ew", pady=(20, 2))
+        ttk.Button(save_row, text="保存设置", command=self.save_settings_clicked, style="Accent.TButton").pack(side="left")
+        ttk.Label(save_row, textvariable=self.glossary_hint_var, style="Muted.TLabel").pack(side="left", padx=12)
+        ttk.Label(settings, text="这一页的改动也会在开始任务、关闭软件时自动保存，不点按钮也不会丢。"
+                  "术语表只影响翻译，不改变语音识别结果。", style="Muted.TLabel").grid(row=25, column=0, columnspan=3, sticky="w")
         gpu_btn = ttk.Button(settings, text="启用显卡加速", command=self.start_gpu_setup, style="Accent.TButton")
         gpu_btn.grid(row=11, column=2, padx=10, pady=6)
         self.busy_controls.append(gpu_btn)
