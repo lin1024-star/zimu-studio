@@ -20,9 +20,11 @@ build/
 api_key.dpapi
 gh_token.txt
 
-# ---- 大文件与二进制（走 Releases 分发；根目录仅保留最新一份安装器给小白）----
+# ---- 大文件与二进制（走 Releases 分发）----
+# 安装器每版约 59 MB，不再进仓库：它包在懒人包里由 Releases 分发，仓库只留源码。
+# 之前每重建一次就提交一份，2.0 这一轮把仓库从 2.8 MB 推到了 419 MB。
+# 打包请用工作目录下的 _make_release.py：git archive 出源码树，再把构建好的安装器放进去。
 *.exe
-!字幕工坊_安装与启动.exe
 *.zip
 *.7z
 *.rar

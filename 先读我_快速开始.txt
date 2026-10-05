@@ -26,3 +26,20 @@
 它是自动联网安装包，不是把所有大模型都塞进 ZIP 的离线包。
 DeepSeek API 密钥需朋友自己取得，翻译按其 API 账户结算。
 本包不需要旧版，不含任何个人密钥；完整源码与验证记录一并附带。
+
+关于本软件与第三方组件
+
+作者：lin1024-star（心非）。免费公开给朋友使用，不收费、不出售。
+源码与主页：https://github.com/lin1024-star/zimu-studio
+本软件自身的代码与文档采用 MIT 协议。
+
+本软件使用了以下第三方组件与模型，版权归各自作者所有，在此致谢：
+- Kim_Vocal_2（人声分离）来自 Ultimate Vocal Remover (UVR) 项目，开发者 Anjok07、aufr33 等。
+  UVR 的官方说明要求使用其模型的第三方开发者署名，此处署名并致谢。
+- faster-whisper、CTranslate2、OpenAI Whisper 语音模型（语音识别）：MIT 许可
+- ONNX Runtime（人声分离推理）：MIT 许可
+- PyAV / FFmpeg（音视频解码）：BSD / LGPL
+- Python 3.13（独立运行环境）：PSF 许可
+- NVIDIA CUDA 运行库（可选，仅显卡加速时下载）：NVIDIA 许可
+
+完整清单见本包 THIRD_PARTY.txt；软件里点标题栏右侧的版本号可打开中文说明。

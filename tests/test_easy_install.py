@@ -95,6 +95,21 @@ class AttributionTests(unittest.TestCase):
             self.assertIn('Ultimate Vocal Remover', text, name)
             self.assertIn('ultimatevocalremovergui', text, name)
 
+    def test_guide_generator_carries_the_attribution(self):
+        """小白指南是朋友最先读的文档，署名必须写进生成脚本，而不是只躺在 THIRD_PARTY.txt 里。"""
+        text = self.text('source/make_guide.py')
+        self.assertIn('lin1024-star', text)
+        self.assertIn('Ultimate Vocal Remover', text)
+        self.assertIn('Kim_Vocal_2', text)
+
+    def test_every_shipped_guide_credits_author_and_uvr(self):
+        for name in ('小白指南.html', 'payload/guide.html',
+                     '先读我_快速开始.txt', '常见问题与解决方法.txt'):
+            text = self.text(name)
+            self.assertIn('lin1024-star', text, name)
+            self.assertIn('Ultimate Vocal Remover', text, name)
+            self.assertIn('Kim_Vocal_2', text, name)
+
     def test_in_app_about_text_states_author_and_free_use(self):
         about = self.text('payload/关于本软件.txt')
         self.assertIn('lin1024-star', about)
