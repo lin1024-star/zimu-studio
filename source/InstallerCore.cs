@@ -217,10 +217,61 @@ namespace SubtitleEasy {
                 +"若当时有识别 / 翻译在跑，关窗口会先问“停止当前任务并退出”，"
                 +"要等任务结束、窗口消失之后进程才真正退出。隔十几秒再点安装 / 修复。");
         }
+        [DllImport("advapi32.dll",SetLastError=true)]static extern bool OpenProcessToken(IntPtr process,int access,out IntPtr token);
+        [DllImport("advapi32.dll",SetLastError=true)]static extern bool GetTokenInformation(IntPtr token,int infoClass,IntPtr info,int len,out int needed);
+        [DllImport("kernel32.dll")]static extern IntPtr GetCurrentProcess();
+        [DllImport("kernel32.dll")]static extern bool CloseHandle(IntPtr handle);
+        // 本进程的完整性级别。使用者遇到的那次"访问被拒绝"就是它造成的：Windows 会按可执行文件所在
+        // 文件夹的标签降低进程完整性，低完整性进程只能读、不能写更高完整性的目录。把它记进日志，
+        // 下次一眼就能看出是权限级别问题，而不是又去猜共享模式。
+        internal static string IntegrityLevel(){
+            IntPtr token=IntPtr.Zero,buffer=IntPtr.Zero;
+            try{
+                if(!OpenProcessToken(GetCurrentProcess(),0x0008,out token))return "未知";
+                int needed;
+                GetTokenInformation(token,25,IntPtr.Zero,0,out needed);   // TokenIntegrityLevel
+                if(needed<=0)return "未知";
+                buffer=Marshal.AllocHGlobal(needed);
+                if(!GetTokenInformation(token,25,buffer,needed,out needed))return "未知";
+                IntPtr sid=Marshal.ReadIntPtr(buffer);                    // TOKEN_MANDATORY_LABEL.Label.Sid
+                int count=Marshal.ReadByte(sid,1);                        // 子作者数量
+                int rid=Marshal.ReadInt32(sid,8+(count-1)*4);             // 最后一个子作者
+                if(rid>=0x4000)return "系统";
+                if(rid>=0x3000)return "高（以管理员运行）";
+                if(rid>=0x2000)return "中（普通）";
+                return "低（受限）";
+            }catch{return "未知";}finally{
+                if(buffer!=IntPtr.Zero)Marshal.FreeHGlobal(buffer);
+                if(token!=IntPtr.Zero)CloseHandle(token);
+            }
+        }
+        // 安装前先确认真的写得进去。写不进去时给出能照做的说明：使用者看到的不该是一句
+        // "UnauthorizedAccessException：访问被拒绝"，而该是"把 ZIP 解压到桌面再运行"。
+        internal static void EnsureWritable(string folder,Action<string> log){
+            string level=IntegrityLevel();
+            try{
+                Directory.CreateDirectory(folder);
+                string probe=Path.Combine(folder,".write-test-"+Guid.NewGuid().ToString("N"));
+                using(var writer=new StreamWriter(probe,false,new UTF8Encoding(false)))writer.Write("ok");
+                File.Delete(probe);
+                Note(log,"安装目录可写；本程序完整性级别："+level+"。");
+            }catch(UnauthorizedAccessException e){
+                Note(log,"写入被拒绝；本程序完整性级别："+level+"；目标："+folder+"；"+e.Message);
+                throw new IOException("安装程序没有写入权限：" + folder + "\r\n\r\n"
+                    +"最常见的原因：安装包被解压到了一个「受限文件夹」里。Windows 会给某些文件夹标上"
+                    +"「低完整性」，从这类文件夹里运行的程序只能读、不能写。\r\n\r\n"
+                    +"解决办法：把下载的 ZIP 解压到「桌面」，再从桌面的文件夹里双击安装程序。\r\n"
+                    +"（当前安装程序运行在「"+level+"」完整性级别。）",e);
+            }catch(IOException e){
+                Note(log,"写测试失败（"+e.GetType().Name+"）："+e.Message);
+                throw new IOException("安装程序无法写入：" + folder + "\r\n\r\n"+e.Message,e);
+            }
+        }
         static void Note(Action<string> log,string message){if(log!=null){try{log(message);}catch{}}}
         public static void Install(string model,bool gpu,bool mirror,CancellationToken token,IProgress<Update> progress,Action<string> log){
             if(!new[]{"small","turbo","tiny","srt"}.Contains(model))throw new ArgumentException("安装模式无效。");
             token.ThrowIfCancellationRequested();EnsureAppClosed(Path.Combine(DataRoot,"application.lock"),Root,token,log);
+            EnsureWritable(Cache,log);
             Directory.CreateDirectory(Root);var drive=new DriveInfo(Path.GetPathRoot(Root));long need=model=="turbo"?7L*1000000000:model=="small"?3L*1000000000:model=="tiny"?15L*100000000:500L*1000000;
             if(drive.AvailableFreeSpace<need)throw new IOException("安装所在磁盘空间不足。此模式请预留约 "+(need/1000000000.0).ToString("0.0")+" GB 后重试；已有 SRT 可先选择仅字幕模式。");
             if(File.Exists(Ready))File.Delete(Ready); // A cancelled repair must not remain marked as complete.
