@@ -195,8 +195,9 @@ namespace SubtitleEasy {
             Note(log,"application.lock 检查失败（已重试 3 次）："+last.GetType().Name+"："+last.Message);
             Note(log,"  文件路径："+appLock);
             Note(log,"  文件属性："+attrs);
-            throw new IOException("字幕工坊仍在运行，或 application.lock 暂时打不开。请保存项目并完全关闭字幕工坊"
-                +"（包括托盘图标，以及正在进行的识别 / 翻译），等几秒后再点安装 / 修复。"
+            throw new IOException("字幕工坊仍在运行，或 application.lock 暂时打不开。请保存项目并完全关闭字幕工坊："
+                +"若当时有识别 / 翻译在跑，关窗口会先问“停止当前任务并退出”，程序要等任务停下来才真正退出。"
+                +"请等到窗口消失、任务结束，隔几秒再点安装 / 修复。"
                 +"若确认已经关闭仍报同样的错，请点“导出安装诊断”，把 ZIP 发来。",last);
         }
         static void Note(Action<string> log,string message){if(log!=null){try{log(message);}catch{}}}
