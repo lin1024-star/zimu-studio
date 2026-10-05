@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import tempfile
 import threading
 import time
 import urllib.error
@@ -1062,9 +1063,49 @@ def prepare_model(model_name, model_dir, emit, stop=None):
     return download_builtin_model(model_name, model_dir, emit, stop)
 
 
-def transcribe(path, model_name, language, device, model_dir, stop, emit):
+def _vocals_track(source, stop, emit):
+    """把音轨分离成人声并写成临时 WAV，返回路径；由调用方负责删除。
+
+    分离按块流式进行，内存占用不随音频时长增长；CPU 上约为 2.5~3 倍实时，
+    所以这是一个默认关闭的可选项：素材很吵时才值得多等这几倍时间。
+    """
+    import separate
+    check_cancel(stop)
+    model = separate.model_file(Path(__file__).resolve().parent)
+    if model is None:
+        raise UserError("安装包里没有找到人声分离模型，无法执行「先分离人声再识别」。可以取消该选项后重试。")
+    emit("phase", "separating")
+    emit("progress", 0)
+    handle = tempfile.NamedTemporaryFile(prefix="subtitle-vocals-", suffix=".wav", delete=False)
+    handle.close()
+    target = Path(handle.name)
+    try:
+        audio = separate.decode(source)
+        session = separate.load_session(model)
+        total = separate.frame_count(audio.shape[1])
+        step = max(total // 100, 1)
+        reported = [0]
+
+        def on_progress(done, _total):
+            if done - reported[0] >= step or done >= total:
+                reported[0] = done
+                emit("progress", min(99, int(done * 100 / max(total, 1))))
+
+        ratio = separate.separate_to_wav(audio, session, target, on_progress)
+        emit("log", "已分离人声（人声占比 %.0f%%），接下来用它识别。" % (ratio * 100))
+        return target
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+
+
+def transcribe(path, model_name, language, device, model_dir, stop, emit, separate_vocals=False):
     check_cancel(stop)
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    vocals = None
+    if separate_vocals:
+        vocals = _vocals_track(path, stop, emit)
+        path = vocals
     emit("stage", "gpu_asr" if device == "cuda" else "cpu_asr")
     if device == "cuda":
         emit("phase", "gpu_setup")
@@ -1108,6 +1149,9 @@ def transcribe(path, model_name, language, device, model_dir, stop, emit):
         if any(k in msg for k in ("huggingface", "connection", "offline", "certificate", "timed out", "not found in the cached", "proxy", "socks")):
             raise UserError("识别模型下载失败。请检查能否访问 Hugging Face，或在“本地模型文件夹”中选择已经下载好的 faster-whisper 模型。") from exc
         raise UserError("无法读取视频或运行识别模型。请检查视频第一条音轨、内存及本地模型文件夹；也可先用 small 模型和 CPU 重试。") from exc
+    finally:
+        if vocals is not None:
+            vocals.unlink(missing_ok=True)
 
 
 def validate_translation(content, cues):
@@ -1542,7 +1586,8 @@ def run_job(config, stop, emit):
             from_asr = False
         else:
             cues, lang = transcribe(source, config["asr_model"], config["language"], config["device"],
-                                    config["model_dir"], stop, emit)
+                                    config["model_dir"], stop, emit,
+                                    separate_vocals=bool(config.get("separate_vocals", False)))
             from_asr = True
         raw = list(cues)
         # 只整理识别结果；用户自己导入的 SRT 原样保留，不擅自改动。

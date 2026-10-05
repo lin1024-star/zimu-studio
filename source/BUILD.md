@@ -18,6 +18,12 @@ Linux 构建时增加 `--mono PATH_TO_MONO`，`--compiler` 指向 mcs.exe。编�
 
 脚本将 payload 下的完整程序（排除 pycache）压缩并作为 payload.zip 资源嵌入 EXE，同时嵌入 source/manifest.json。修改程序或指南后必须重新编译。FAQ 主数据位于 make_guide.py，运行它会同时更新两个 HTML、副本 TXT 与 faq-data.json。
 
+## 人声分离模型
+
+`payload/models/Kim_Vocal_2.onnx`（约 64 MB）随包分发，运行时不联网下载。它来自 Ultimate Vocal Remover (UVR) 项目，署名与来源见 `THIRD_PARTY.txt`。
+
+该文件被 `.gitignore` 的 `*.onnx` 规则排除在版本库之外：从全新克隆构建时它不存在，做出来的安装包不含模型。这种情况下程序不会静默降级——勾选「先分离人声再识别」会明确提示「安装包里没有找到人声分离模型」。`InstallerTests` 会检查 `payload.zip` 中是否存在该条目，缺模型时构建验证直接失败，避免把残缺的包发出去。
+
 ## 验证
 
 Python 应用的无付费 API 回归检查：

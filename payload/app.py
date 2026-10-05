@@ -21,7 +21,7 @@ from core import (APP_VERSION, DEFAULT_MODEL, GLOSSARY_LIMIT, Cue, UserError, at
                   CHINESE_ONLY_KEYS, EXPORT_ITEMS, EXPORT_LABELS, SOURCE_ONLY_KEYS, ZH_KEYS,
                   BUILTIN_MODEL_REPOS, local_model_status, model_download_mb,
                   default_export_keys, default_export_selection, export_choices, should_alert)
-from diagnostics import Diagnostics, error_info
+from diagnostics import PHASES, Diagnostics, error_info
 from dialogs import AddCueDialog, DurationDialog, ExportDialog, SrtImportDialog
 from paths import data_root
 
@@ -75,6 +75,13 @@ CPU 模式可直接使用。NVIDIA 显卡请先点击“启用显卡加速”：
 首次使用某个模型需联网下载：tiny 来自魔搭 ModelScope（国内直连），其余来自 Hugging Face（安装器支持国内镜像）。可以在设置中选择已下载完整的 faster-whisper / CTranslate2 模型文件夹。
 语音识别在电脑上运行。翻译时只向官方 api.deepseek.com 发送原文、相邻上下文、部分已译内容及术语说明。
 视频默认读取第一条音轨。需要其他音轨时，先在剪辑软件中导出对应音频，再导入本程序。
+
+先分离人声再识别（默认关闭）
+
+素材里游戏音效、音乐盖过说话声时，在设置页勾选「先分离人声再识别」：程序先把说话声与音效拆开，只拿说话声去识别。
+实测素材很吵时能明显多听出内容；极端情况下不分离几乎识别不出东西。素材本身安静时改善有限，却一样要多等。
+代价是识别前多等约 3 倍时间（1 小时素材约多等 37 分钟）。分离全程在本机完成，不联网、不上传，也不额外下载模型。
+分离只影响识别，不改变翻译；术语表只影响翻译，不改变识别，两者互不相干。
 
 项目和恢复
 
@@ -172,6 +179,7 @@ class Application(tk.Tk):
         self.ass_style_name_var = tk.StringVar(value=self.settings.get("ass_style_name", "Default"))
         self.alert_var = tk.BooleanVar(value=bool(self.settings.get("alert_when_done", True)))
         self.tidy_var = tk.BooleanVar(value=bool(self.settings.get("tidy_axis", True)))
+        self.separate_var = tk.BooleanVar(value=bool(self.settings.get("separate_vocals", False)))
         self.model_hint_var = tk.StringVar()
         self.force_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="选择视频，或打开已有项目 / SRT 直接校对。")
@@ -223,7 +231,8 @@ class Application(tk.Tk):
                 "glossary": self.glossary.get("1.0", "end-1c").strip(),
                 "ass_style_file": self.ass_style_var.get(), "ass_style_name": self.ass_style_name_var.get(),
                 "alert_when_done": bool(self.alert_var.get()),
-                "tidy_axis": bool(self.tidy_var.get())}
+                "tidy_axis": bool(self.tidy_var.get()),
+                "separate_vocals": bool(self.separate_var.get())}
         try:
             atomic_write(CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
             return True
@@ -452,12 +461,20 @@ class Application(tk.Tk):
         ttk.Label(settings, text="翻译要跑几分钟到几十分钟；跑完时把窗口拉到前台提醒一次。取消勾选则不打扰，可在状态栏和日志里查看结果。", style="Muted.TLabel").grid(row=21, column=1, columnspan=2, sticky="w")
         ttk.Checkbutton(settings, text="识别后自动整理轴（合并重复、并入语气碎片、修正拖音）", variable=self.tidy_var).grid(row=22, column=0, columnspan=3, sticky="w", pady=(14, 2))
         ttk.Label(settings, text="只动重复文本和时长，不重跑识别、不改变独一无二的内容；整理前的原文会存进项目，随时可还原。", style="Muted.TLabel").grid(row=23, column=1, columnspan=2, sticky="w")
+        separate_check = ttk.Checkbutton(
+            settings, text="先分离人声再识别（素材很吵时打开，能多听出内容；识别前多等约 3 倍时间）",
+            variable=self.separate_var)
+        separate_check.grid(row=24, column=0, columnspan=3, sticky="w", pady=(14, 2))
+        self.busy_controls.append(separate_check)
+        ttk.Label(settings, text="把说话声与游戏音效、音乐拆开，只拿说话声去识别。素材安静时改善有限，"
+                  "很吵时是决定性的（实测极端情况下不分离会几乎识别不出内容）；随包模型约 60 MB，不联网、不上传。",
+                  style="Muted.TLabel").grid(row=25, column=1, columnspan=2, sticky="w")
         save_row = ttk.Frame(settings)
-        save_row.grid(row=24, column=0, columnspan=3, sticky="ew", pady=(20, 2))
+        save_row.grid(row=26, column=0, columnspan=3, sticky="ew", pady=(20, 2))
         ttk.Button(save_row, text="保存设置", command=self.save_settings_clicked, style="Accent.TButton").pack(side="left")
         ttk.Label(save_row, textvariable=self.glossary_hint_var, style="Muted.TLabel").pack(side="left", padx=12)
         ttk.Label(settings, text="这一页的改动也会在开始任务、关闭软件时自动保存，不点按钮也不会丢。"
-                  "术语表只影响翻译，不改变语音识别结果。", style="Muted.TLabel").grid(row=25, column=0, columnspan=3, sticky="w")
+                  "术语表只影响翻译，不改变语音识别结果。", style="Muted.TLabel").grid(row=27, column=0, columnspan=3, sticky="w")
         gpu_btn = ttk.Button(settings, text="启用显卡加速", command=self.start_gpu_setup, style="Accent.TButton")
         gpu_btn.grid(row=11, column=2, padx=10, pady=6)
         self.busy_controls.append(gpu_btn)
@@ -947,7 +964,8 @@ class Application(tk.Tk):
                   "api_key": self.api_key_var.get(), "model": self.model_var.get().strip(),
                   "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": self.force_var.get(), "mode": effective_mode,
                   "ass_style_file": self.ass_style_var.get().strip() or None, "ass_style_name": self.ass_style_name_var.get(),
-                  "tidy_axis": bool(self.tidy_var.get())}
+                  "tidy_axis": bool(self.tidy_var.get()),
+                "separate_vocals": bool(self.separate_var.get())}
         self.diagnostics.start_task(config)
         self.launch_job(config)
         self.force_var.set(False)
@@ -984,7 +1002,8 @@ class Application(tk.Tk):
                       "asr_model": local or self.asr_var.get(), "language": {"英语": "en", "日语": "ja"}.get(self.lang_var.get(), ""),
                       "device": "cpu" if self.device_var.get().startswith("CPU") else "cuda", "model_dir": str(USER_DIR / "models"),
                       "api_key": self.api_key_var.get(), "model": self.model_var.get().strip(),
-                      "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": False, "mode": "translate"}
+                      "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": False, "mode": "translate",
+                      "separate_vocals": bool(self.separate_var.get())}
             self.diagnostics.start_task(config)
             self.launch_job(config)
         except (UserError, OSError) as exc:
@@ -1056,6 +1075,8 @@ class Application(tk.Tk):
                     self.save_settings()
                     self.status_var.set("显卡加速已启用。选择视频和本地 Turbo 模型后即可识别。")
                     self.log("显卡组件检查通过：" + value["name"] + "。后续使用省显存模式；模型文件可继续复用。")
+                elif kind == "phase":
+                    self.status_var.set(PHASES.get(value, value))
                 elif kind == "status":
                     self.status_var.set(value)
                 elif kind == "log":

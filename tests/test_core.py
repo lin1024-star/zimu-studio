@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import sys
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "payload"))
+import core
 from core import (Cancelled, Cue, DEFAULT_EXPORT_KEYS, DeepSeekClient, GLOSSARY_LIMIT, ResponseError, UserError,
                   clean, cues_from_segments, default_export_keys, default_export_selection,
                   export_blank, export_choices, export_files, fingerprint, format_blank_ass,
@@ -688,6 +690,70 @@ class GlossaryTests(unittest.TestCase):
 
     def test_limit_is_the_number_the_interface_tells_users(self):
         self.assertEqual(GLOSSARY_LIMIT, 6000)
+
+
+class SeparateVocalsTests(unittest.TestCase):
+    """「先分离人声再识别」是默认关闭的可选项；临时人声轨必须清干净。"""
+
+    def setUp(self):
+        self.stop = threading.Event()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.media = self.root / "movie.mp4"
+        self.media.write_text("x", encoding="utf-8")
+
+    def transcribe_with(self, vocals=None, separate_vocals=False):
+        seen = {}
+
+        def fake_once(path, *args, **kwargs):
+            seen["asr_input"] = Path(path)
+            return ([Cue(1, 0.0, 1.0, "こんにちは")], "ja")
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(core, "_transcribe_once", fake_once))
+            if vocals is not None:
+                stack.enter_context(patch.object(core, "_vocals_track", lambda *a: vocals))
+            core.transcribe(self.media, "small", "ja", "cpu", "", self.stop, lambda *a: None,
+                            separate_vocals=separate_vocals)
+        return seen["asr_input"]
+
+    def test_off_by_default_sends_the_original_media(self):
+        self.assertEqual(self.transcribe_with(), self.media)
+
+    def test_the_option_sends_the_separated_track_instead(self):
+        vocals = self.root / "vocals.wav"
+        vocals.write_bytes(b"fake wav")
+        self.assertEqual(self.transcribe_with(vocals=vocals, separate_vocals=True), vocals)
+
+    def test_the_temp_vocals_file_is_removed_afterwards(self):
+        vocals = self.root / "vocals.wav"
+        vocals.write_bytes(b"fake wav")
+        self.transcribe_with(vocals=vocals, separate_vocals=True)
+        self.assertFalse(vocals.exists(), "临时人声轨没有删掉，会一直占着磁盘")
+
+    def test_missing_bundled_model_gives_an_actionable_error(self):
+        with patch("separate.model_file", return_value=None):
+            with self.assertRaises(UserError) as caught:
+                core._vocals_track(self.media, self.stop, lambda *a: None)
+        self.assertIn("人声分离模型", str(caught.exception))
+
+    def test_run_job_forwards_the_option_to_asr(self):
+        project = make_project(0)
+        project.update(recognition_complete=False, input=str(self.media))
+        path = self.root / "project.json"
+        save_project(path, project)
+        seen = {}
+
+        def fake_transcribe(source, model, language, device, model_dir, stop, emit, separate_vocals=False):
+            seen["flag"] = separate_vocals
+            return ([Cue(1, 0.0, 1.0, "こんにちは")], "ja")
+
+        cfg = {"project_path": str(path), "mode": "transcribe", "asr_model": "small", "language": "ja",
+               "device": "cpu", "model_dir": "", "output": str(self.root), "separate_vocals": True}
+        with patch("core.transcribe", side_effect=fake_transcribe):
+            run_job(cfg, self.stop, lambda k, v: None)
+        self.assertTrue(seen.get("flag"), "run_job 没有把开关传给识别")
 
 
 if __name__ == "__main__":

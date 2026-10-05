@@ -23,7 +23,7 @@ def initialize_settings(model, gpu=False):
     data = {"asr_model": model if model in {"small", "turbo", "tiny"} else "small",
             "device": "NVIDIA GPU（4 GB 省显存）" if gpu else "CPU（直接使用）",
             "local_model": "", "language": "自动识别", "output": str(output),
-            "model": DEFAULT_MODEL, "glossary": "", "alert_when_done": True}
+            "model": DEFAULT_MODEL, "glossary": "", "alert_when_done": True, "separate_vocals": False}
     atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2))
 
 

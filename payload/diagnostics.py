@@ -26,6 +26,7 @@ MIB = 1024 ** 2
 PHASES = {
     "idle": "空闲", "preparing": "准备任务", "gpu_setup": "检查／配置显卡",
     "model_loading": "加载识别模型", "audio_preprocessing": "音频预处理：解码／人声检测／特征计算",
+    "separating": "分离人声（完成后自动开始识别）",
     "inference": "逐段识别字幕", "translation": "翻译字幕", "export": "导出文件",
     "completed": "已完成", "cancelled": "已停止", "error": "发生错误",
 }
