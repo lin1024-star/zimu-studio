@@ -11,8 +11,9 @@ Original code and documentation are MIT-licensed; see LICENSE.txt.
 
 What this package contains
 --------------------------
-This ZIP includes the application, installer source, guides, tests, and the
-vocal-separation model named below. The Python runtime, the pinned wheels, and
+This ZIP includes the application, installer source, guides, tests, the
+vocal-separation model named below, and the three vendored libraries listed
+under "live subtitle audio capture". The Python runtime, the pinned wheels, and
 the speech-recognition model weights are downloaded from their publishers during
 setup and retain their own licenses. The MIT license in this package covers
 SubtitleStudio's original code and docs, not every third-party component.
@@ -30,6 +31,18 @@ Vocal separation — Kim_Vocal_2 (MDX-Net)
   These weights were trained on third-party audio datasets, so the training-data
   terms may differ from the code license. This project uses them for personal,
   non-commercial subtitle work.
+
+Live subtitle audio capture — vendored in this package (payload/lib)
+  Included in this package. Used only by the realtime subtitle overlay, which
+  captures the audio the system is currently playing. Each library's full
+  license text ships alongside the code at payload/lib/LICENSES.txt.
+
+  soundcard (BSD 3-Clause), Copyright (c) 2016 Bastian Bechtold
+    https://github.com/bastibe/SoundCard
+  cffi (MIT No Attribution), https://github.com/python-cffi/cffi
+    Bundled binary module: _cffi_backend.cp313-win_amd64.pyd
+  pycparser (BSD 3-Clause), Copyright (c) 2008-2027 Eli Bendersky
+    https://github.com/eliben/pycparser
 
 Speech recognition (downloaded at setup, not included in this ZIP)
   faster-whisper (MIT): https://github.com/SYSTRAN/faster-whisper

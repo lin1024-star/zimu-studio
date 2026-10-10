@@ -11,6 +11,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
+
+import errfmt
 from dataclasses import asdict, dataclass
 from collections import Counter, defaultdict, deque
 from bisect import bisect_right
@@ -20,7 +22,7 @@ from pathlib import Path
 from diagnostics import error_info
 from paths import data_root
 
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 DEFAULT_MODEL = "deepseek-flash"
 API_URL = "https://api.deepseek.com/chat/completions"
 LANGUAGES = {"en": "英语", "ja": "日语", "zh": "中文"}
@@ -87,9 +89,11 @@ def atomic_write(path, text, encoding="utf-8"):
 
 def save_project(path, project):
     # Whitelist: credentials are never accepted into the project format.
+    # ass / ass_style_mode 是「导入过 .ass」的来源记录：原文件全文 + 字号设置。
+    # 里面只有字幕内容与样式，不含任何密钥；缺了它，重新打开项目就不知道要按原格式重建。
     allowed = {"version", "input", "fingerprint", "recognition", "language", "cues",
                "recognition_complete", "translation_profile", "last_export", "name", "subtitle_mode",
-               "axis_raw", "axis_review"}
+               "axis_raw", "axis_review", "ass", "ass_style_mode"}
     safe = {k: v for k, v in project.items() if k in allowed}
     atomic_write(path, json.dumps(safe, ensure_ascii=False, indent=2))
 
@@ -182,6 +186,150 @@ def read_srt(path, encoding="auto", *, preserve_lines=False):
     if not cues:
         raise UserError("SRT 中没有可用字幕。")
     return cues
+
+
+def parse_glossary(text):
+    """把术语表解析成 [(原文, [译名候选], 显示值)]。
+
+    约定「原文 = 译名」一行一条；标题行（【】）、说明行、空行自动跳过，
+    所以现有的术语表不用改格式就能用。多个译法用 / 分开，括号里的补充说明会被忽略。
+    """
+    terms = []
+    for raw in (text or "").splitlines():
+        line = raw.strip().replace("＝", "=")
+        if not line or line.startswith("#") or line[0] in "【（(「":
+            continue
+        if "=" not in line:
+            continue
+        left, right = line.split("=", 1)
+        term = left.strip().strip("「」").strip()
+        value = re.split(r"[（(]", right, 1)[0].strip().strip("「」").strip()
+        if not term or not value:
+            continue
+        if len(term) > 20 or len(value) > 30:
+            continue          # 这么长的多半是说明行，不是术语
+        choices = [x.strip() for x in re.split(r"[/／]", value) if x.strip()]
+        if choices:
+            terms.append((term, choices, value))
+    return terms
+
+
+def glossary_hits(terms, source, zh):
+    """这条字幕命中了哪些术语；其中哪些的译名没出现在译文里。
+
+    返回 ((原文, 译名), ...) 两组：命中 / 可能翻漏了。
+
+    正常情况下在**原文**里找术语，再看译文里有没有对应译名——这才是「可能翻漏了」。
+    但「中文 ASS」导入的项目里原文栏装的其实是中文，日文术语一条也匹配不上，
+    所以那种情况改从**译文**侧认术语：至少能看出这条用到了术语表。
+    """
+    text_source, text_zh = source or "", zh or ""
+
+    def longest(items):
+        """长的优先：命中了「ひいらぎゆか」就不用再单列「ゆか」，否则一片噪音。"""
+        kept = []
+        for item in sorted(items, key=lambda one: -len(one[0])):
+            if any(item[0] in longer[0] for longer in kept):
+                continue
+            kept.append(item)
+        return kept
+
+    def by_value(items):
+        """同一个译名只留一条：术语表里常把片假名和平假名写法各写一行，列两遍是噪音。"""
+        seen, out = set(), []
+        for term, value in items:
+            if value in seen:
+                continue
+            seen.add(value)
+            out.append((term, value))
+        return out
+
+    from_source = longest([item for item in terms if item[0] and item[0] in text_source])
+    if from_source:
+        matched = [(term, value) for term, choices, value in from_source if any(x in text_zh for x in choices)]
+        missing = [(term, value) for term, choices, value in from_source if not any(x in text_zh for x in choices)]
+        return by_value(matched), by_value(missing)
+    translated = longest([item for item in terms if any(x in text_zh for x in item[1])])
+    return by_value([(term, value) for term, _choices, value in translated]), []
+
+
+def read_ass_project(path, mode="source"):
+    """导入 ASS 字幕，返回项目字典（结构与「只有原文 / 只有中文」的 SRT 导入一致）。
+
+    「中文」模式沿用现有约定：正文同时写进原文栏与中文栏，另用 subtitle_mode 标记
+    界面只显示中文那一栏——这样 Cue 的校验和整套下游逻辑都不用为 ASS 破例。
+
+    原文件整份留在 project["ass"] 里，导出时按原样重建；这里只把正文取出来编辑。
+    """
+    import ass
+    if mode not in {"source", "chinese"}:
+        raise UserError("请选择这个 ASS 里装的是原文还是中文。")
+    try:
+        document = ass.Document.load(path)
+    except ass.AssError as exc:
+        raise UserError(str(exc)) from exc
+    except OSError as exc:
+        raise UserError("无法读取这个 ASS 文件，请检查文件是否存在，以及是否有读取权限。") from exc
+    items = document.dialogues()
+    if not items:
+        raise UserError("这个 ASS 里没有可以编辑的字幕（可能全是绘图行或注释行）。")
+    cues = []
+    for item in items:
+        cue = Cue(len(cues) + 1, item["start"], item["end"], item["text"], item["text"] if mode == "chinese" else "")
+        cue.validate()
+        cues.append(cue)
+    meta = document.snapshot()
+    meta.update({"mode": mode,
+                 "lines": [item["line"] for item in items],
+                 "original": [item["text"] for item in items]})
+    language = "zh" if mode == "chinese" else (
+        "ja" if any(re.search(r"[\u3040-\u30ff]", c.source) for c in cues) else "en")
+    return {"version": 1, "name": Path(path).stem, "input": str(Path(path).resolve()),
+            "language": language, "recognition_complete": True,
+            "subtitle_mode": "chinese" if mode == "chinese" else "source",
+            "cues": [asdict(c) for c in cues], "ass": meta}
+
+
+def export_ass_from_source(meta, cues, out_path, font_sizes=None, style_edits=None):
+    """按导入时的原格式重建 .ass，返回实际改了几条。
+
+    只替换文字真正变了的行；没改的行一个字节都不碰——这就是「保留格式」的含义。
+    字号与其余样式改动默认取 meta 里存的那份（由「ASS 样式」对话框写入）。
+    """
+    import ass
+    if font_sizes is None:
+        font_sizes = meta.get("font_sizes") or {}
+    if style_edits is None:
+        style_edits = meta.get("style_edits") or {}
+    # 「中文模式」下软件把原文栏当作中文字幕的编辑区（界面标签会变成"中文字幕校对"），
+    # zh 只是副本；此时必须以原文栏为准，否则导出的是没改过的旧副本。
+    chinese_mode = meta.get("mode") == "chinese"
+    document = ass.Document.from_parts(meta["text"], meta["encoding"], meta.get("bom", ""), meta.get("eol", "lf"))
+    lines = meta.get("lines") or []
+    original = meta.get("original") or []
+    texts = {}
+    for index, cue in enumerate(cues):
+        if index >= len(lines):
+            break
+        value = clean(cue.source) if chinese_mode else (clean(cue.zh) or clean(cue.source))
+        was = clean(original[index]) if index < len(original) else ""
+        if value and value != was:
+            texts[lines[index]] = value
+    target = Path(out_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(document.render(texts=texts, font_sizes=font_sizes, style_edits=style_edits))
+    return len(texts)
+
+
+def apply_template_style_edits(text, meta):
+    """模板生成的 ASS 也套用同样的样式改动，这样「换成模板」照样能改字号和颜色。"""
+    edits = (meta or {}).get("style_edits") or {}
+    sizes = (meta or {}).get("font_sizes") or {}
+    if not edits and not sizes:
+        return text
+    import ass
+    document = ass.Document.from_parts(text, "utf-8", "", "lf")
+    return document.render(font_sizes=sizes, style_edits=edits).decode("utf-8")
 
 
 def import_srt_project(path, mode="source", language="", chinese_path=None,
@@ -318,6 +466,76 @@ def save_duration_change(path, project, seconds, cue_ids=None, stop_at_next=True
     if report["changed_count"]:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup = Path(path).with_name(f"project_before_timing_{stamp}_{os.urandom(4).hex()}.json")
+        save_project(backup, project)
+        save_project(path, updated)
+    return updated, report, backup
+
+
+def offset_milliseconds(seconds):
+    """解析「整体偏移多少秒」，允许正负号，精确到毫秒。
+
+    正数 = 字幕往后挪（晚了），负数 = 字幕往前挪（早了）。
+    """
+    text = str(seconds).strip().lstrip("＋").replace("＋", "+").replace("－", "-")
+    if not re.fullmatch(r"[+-]?(?:\d+(?:\.\d{0,3})?|\.\d{1,3})", text):
+        raise UserError("偏移量请填写秒数，可带正负号，最多三位小数，例如 -1.5 或 +0.750。")
+    value = Decimal(text)
+    if not Decimal("-86400") <= value <= Decimal("86400"):
+        raise UserError("偏移量须在 -86400 秒至 86400 秒之间。")
+    return int(value * 1000)
+
+
+def set_project_offset(project, seconds, cue_ids=None):
+    """把字幕整体往前或往后挪，条目内容、时长、相对间隔都不动。
+
+    只改开始和结束时间，不动文本，也不重新识别、不调翻译 API。
+
+    **不会把任何一条推成负数。** 如果整体平移会让最早一条越过 0 秒，
+    就整条轨只移到刚好贴住 0 秒为止——**不是把个别条目单独截到 0**
+    （那样会把条目之间的间隔压变形，就不是"整体平移"了）。
+    实际生效了多少，在 report 里如实写明。
+    """
+    millis = offset_milliseconds(seconds)
+    rows = [dict(row) for row in project["cues"]]
+    if not rows:
+        raise UserError("请先载入字幕。")
+    for row in rows:
+        Cue(**row).validate()
+    ids = {row["id"] for row in rows}
+    selected = ids if cue_ids is None else set(cue_ids)
+    if not selected or not selected <= ids or any(type(i) is not int for i in selected):
+        raise UserError("没有找到要平移的字幕，请重新选择。")
+    targets = [row for row in rows if row["id"] in selected]
+    earliest_ms = min(round(row["start"] * 1000) for row in targets)
+    effective = millis
+    clamped = False
+    if earliest_ms + millis < 0:
+        effective = -earliest_ms
+        clamped = True
+    report = {"requested_ms": millis, "effective_ms": effective, "clamped": clamped,
+              "earliest_ms": earliest_ms, "target_count": len(selected), "changed_count": 0}
+    if effective == 0:
+        return {**project, "cues": rows}, report
+    for row in rows:
+        if row["id"] not in selected:
+            continue
+        new_start = (round(row["start"] * 1000) + effective) / 1000
+        new_end = (round(row["end"] * 1000) + effective) / 1000
+        if new_start != row["start"] or new_end != row["end"]:
+            report["changed_count"] += 1
+        row["start"] = new_start
+        row["end"] = new_end
+        Cue(**row).validate()
+    return {**project, "cues": rows}, report
+
+
+def save_offset_change(path, project, seconds, cue_ids=None):
+    """整体平移并保存，改之前先备份一份项目（和调时用的是同一套做法）。"""
+    updated, report = set_project_offset(project, seconds, cue_ids)
+    backup = None
+    if report["changed_count"]:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup = Path(path).with_name(f"project_before_offset_{stamp}_{os.urandom(4).hex()}.json")
         save_project(backup, project)
         save_project(path, updated)
     return updated, report, backup
@@ -612,9 +830,16 @@ def export_files(project_path, project, include_zh=True, ass_style_file=None, as
             save(txt, "\n\n".join(clean(c.source) + "\n" + clean(c.zh) for c in cues) + "\n")
             files.append(txt)
     if "zh_ass" in wanted:
-        ass = out / f"{name}_中文_zh.ass"
-        save(ass, format_ass(cues, ass_style_name or "Default", style_text))
-        files.append(ass)
+        ass_path = out / f"{name}_中文_zh.ass"
+        source = project.get("ass")
+        # 导入过 .ass 的项目默认按原格式重建；只有明确勾了「换成模板样式」才套模板。
+        # 两条路都会套用「ASS 样式」里改过的字号/颜色，所以选哪套样式都不影响能不能改样式。
+        if source and project.get("ass_style_mode") != "template":
+            export_ass_from_source(source, cues, ass_path)
+        else:
+            save(ass_path, apply_template_style_edits(
+                format_ass(cues, ass_style_name or "Default", style_text), source))
+        files.append(ass_path)
     if "blank" in wanted:
         blank = out / f"{name}_空轴.{'ass' if blank_format == 'ass' else 'srt'}"
         save(blank, format_blank_ass(cues, ass_style_name or "Default", style_text) if blank_format == "ass"
@@ -631,10 +856,23 @@ def export_blank(project_path, project, fmt="srt", ass_style_file=None, ass_styl
                         ass_style_file=ass_style_file, ass_style_name=ass_style_name)
 
 
-def cues_from_segments(segments, language, stop=None, progress=None):
+def cues_from_segments(segments, language, stop=None, progress=None, facts=None):
+    """把识别结果切成字幕条。
+
+    facts：可选的现场信息（音频时长、模型名等），
+    **听不出东西时会连同下面的计数一起写进报错**——
+    让人截一张图就知道现场长什么样，不用来回问。
+    """
     cues = []
+    seen = 0          # 识别出几段
+    with_text = 0     # 其中真的有文字的几段
+    covered = 0.0     # 识别覆盖到音频的第几秒
     for seg in segments:
         check_cancel(stop)
+        seen += 1
+        if clean(seg.text):
+            with_text += 1
+        covered = max(covered, float(seg.end))
         words = list(getattr(seg, "words", None) or [])
         if words:
             group, start, end = [], None, None
@@ -665,7 +903,32 @@ def cues_from_segments(segments, language, stop=None, progress=None):
         if progress:
             progress(float(seg.end), len(cues))
     if not cues:
-        raise UserError("未识别到说话声。请检查视频的第一条音轨是否有原声，或手动指定原语言再试。")
+        info = dict(facts or {})
+        checks = [
+            ("识别出几段", f"{seen} 段" if seen else "一段都没有"),
+            ("其中真的有文字的", f"{with_text} 段" if seen else "—"),
+            ("识别覆盖到音频的第几秒", f"{covered:.1f} 秒" if covered else "0 秒（等于整段都没听出东西）"),
+        ]
+        if info.get("duration"):
+            checks.append(("音频总长", f"{float(info['duration']):.1f} 秒"))
+        if info.get("detected"):
+            checks.append(("机器判断的语言", str(info["detected"])))
+        checks.append(("你指定的语言", language or "（自动判断）"))
+        if info.get("model"):
+            checks.append(("用的模型", str(info["model"])))
+        if info.get("device"):
+            checks.append(("用的设备", str(info["device"])))
+        raise UserError(errfmt.diagnose(
+            "没听出任何说话声，一条字幕都没生成。",
+            checks=checks,
+            steps=[
+                "确认这个视频真的有声音：用播放器放一下，听不听得见人说话；",
+                "如果是音乐、游戏音效、纯环境音，那本来就没有说话声可识别；",
+                "在「识别语言」里手动选一次日语（或其它确定有的语言）再试；",
+                "素材里说话声被 BGM 盖住时，在设置里打开「先分离人声再识别」，会慢一些但听得清。",
+            ],
+            extra="以上任何一步试完还是不行，就照上面这些信息反映——"
+                  "特别是「识别出几段」和「音频总长」这两个数，基本能定位问题。"))
     return cues
 
 
@@ -738,7 +1001,12 @@ def _transcribe_once(path, model_name, language, device, model_dir, stop, emit):
         def progress(seconds, count):
             emit("progress", min(98, seconds / max(1, info.duration) * 100))
             emit("status", f"正在识别：{seconds / 60:.1f} / {info.duration / 60:.1f} 分钟，已生成 {count} 条字幕")
-        cues = cues_from_segments(segments, info.language, stop, progress)
+        cues = cues_from_segments(segments, info.language, stop, progress, facts={
+            "duration": info.duration,
+            "detected": LANGUAGES.get(info.language, info.language),
+            "device": "显卡（CUDA）" if device == "cuda" else "CPU",
+            "model": model_name,
+        })
         return cues, info.language
     finally:
         engine = None
@@ -823,12 +1091,15 @@ def _probe_endpoint(url, use_proxy, timeout=6):
         return False
 
 
-def choose_download_route(repo, emit=None, probe=_probe_endpoint):
+def choose_download_route(repo, emit=None, probe=_probe_endpoint, record=None):
     """决定从哪下、走不走系统代理，返回 (endpoint, use_proxy)。
 
     国内直连 huggingface.co 常常连不上；机器上又可能挂着一个早就失效的代理
     （代理软件没开、端口变了）。两种情况都会让人白等几十秒才看到报错。
     这里先花几秒探一遍，把能走通的路线定下来，再交给真正的下载。
+
+    record：可选 list。探过的每条线路都会往里塞 (线路名, 通不通)，
+    失败时用来告诉使用者「我实际试了哪几条、各自什么结果」。
     """
     routes = ((HF_MIRROR, True, "国内镜像"),
               (HF_MIRROR, False, "国内镜像（不使用代理）"),
@@ -836,7 +1107,10 @@ def choose_download_route(repo, emit=None, probe=_probe_endpoint):
               (HF_OFFICIAL, False, "Hugging Face 官网（不使用代理）"))
     path = "/{}/resolve/main/config.json".format(repo)
     for endpoint, use_proxy, label in routes:
-        if probe(endpoint + path, use_proxy):
+        ok = probe(endpoint + path, use_proxy)
+        if record is not None:
+            record.append((label, bool(ok)))
+        if ok:
             if emit:
                 emit("log", "模型下载线路：" + label + "。")
             return endpoint, use_proxy
@@ -999,7 +1273,8 @@ def download_builtin_model(model_name, model_dir, emit, stop=None):
         raise UserError(f"不认识的模型名“{model_name}”。请在“识别模型”里重新选一个。")
     dest = downloaded_model_dir(model_name, model_dir)
     total_mb = model_download_mb(model_name)
-    endpoint, use_proxy = choose_download_route(repo, emit)
+    probes = []
+    endpoint, use_proxy = choose_download_route(repo, emit, record=probes)
     apply_download_route(endpoint, use_proxy)
     try:
         import huggingface_hub
@@ -1147,8 +1422,36 @@ def transcribe(path, model_name, language, device, model_dir, stop, emit, separa
     except Exception as exc:
         msg = str(exc).lower()
         if any(k in msg for k in ("huggingface", "connection", "offline", "certificate", "timed out", "not found in the cached", "proxy", "socks")):
-            raise UserError("识别模型下载失败。请检查能否访问 Hugging Face，或在“本地模型文件夹”中选择已经下载好的 faster-whisper 模型。") from exc
-        raise UserError("无法读取视频或运行识别模型。请检查视频第一条音轨、内存及本地模型文件夹；也可先用 small 模型和 CPU 重试。") from exc
+            raise UserError(errfmt.diagnose(
+                f"识别模型「{model_name}」没准备好——网络连不上，或者下载到一半断了。",
+                checks=[
+                    ("你要的模型", model_name),
+                    ("它应该下载到这里", errfmt.describe_path(downloaded_model_dir(model_name, model_dir))),
+                    ("安装器准备的模型放这里", errfmt.describe_path(Path(model_dir) / "prepared")),
+                    ("原始报错", type(exc).__name__ + ": " + str(exc)[:120]),
+                ],
+                steps=[
+                    "在「识别模型」里换成 small 或 turbo 再试——本机已经有的话根本不用下载；",
+                    "检查网络能不能上 Hugging Face；国内直连常常连不上，换个时间或网络再试；",
+                    "如果开着代理软件（Clash、v2ray 之类），确认它真的在运行；"
+                    "关掉系统代理后重试也行——程序会自己换线路；",
+                    "网络恢复后重新开始识别即可，已经下好的部分不会重下。",
+                ],
+                extra=f"模型会存在：{downloaded_model_dir(model_name, model_dir)}")) from exc
+        raise UserError(errfmt.diagnose(
+            "视频读不了，或者识别模型没能跑起来。",
+            checks=[
+                ("要处理的文件", errfmt.describe_path(path)),
+                ("用它识别", model_name or "（未指定）"),
+                ("跑在哪个设备上", "显卡（CUDA）" if device == "cuda" else "CPU"),
+                ("原始报错", type(exc).__name__ + ": " + str(exc)[:120]),
+            ],
+            steps=[
+                "确认这个文件能被普通播放器打开、听得到声音；",
+                "视频有多条音轨时，节目里的第一条通常才是正片；换个文件试试也能排除素材问题；",
+                "在设置里把「处理设备」改成 CPU、模型改成 small 再试一次——能跑通就说明是显卡或内存不够；",
+                "确认「本地模型文件夹」指向的目录里确实有完整的模型文件。",
+            ])) from exc
     finally:
         if vocals is not None:
             vocals.unlink(missing_ok=True)
@@ -1174,6 +1477,16 @@ def validate_translation(content, cues):
         return result
     except (ValueError, TypeError, KeyError) as exc:
         raise ResponseError("翻译响应缺行、序号重复或格式错误，未覆盖已保存的字幕。") from exc
+
+
+# 翻译固定用 temperature = 0。
+# 不设的话 DeepSeek 默认 1.0，实测同一份素材、同样的设置重翻一遍，63%~70% 的句子会
+# 换个说法（「对」→「是啊」这种），人工校对过的地方等于白校。
+# 设成 0 后降到 32%~48%（剩下的来自上下文里回填的上一批译文，属于另一件事）。
+TRANSLATE_TEMPERATURE = 0.0
+# 但重试必须换个温度：temperature = 0 时同一个输入会得到同一个（失败的）输出，
+# 「单条重试」原样再要一次没有任何意义。
+RETRY_TEMPERATURE = 0.7
 
 
 class DeepSeekClient:
@@ -1236,7 +1549,7 @@ class DeepSeekClient:
             except (ValueError, UnicodeError):
                 raise ResponseError("DeepSeek 未返回有效的 JSON 响应，请稍后继续。") from None
 
-    def translate(self, cues, language, context, glossary):
+    def translate(self, cues, language, context, glossary, temperature=TRANSLATE_TEMPERATURE):
         system = (
             "You are a professional subtitle translator for video editors. Translate the supplied subtitle cues into "
             "natural, faithful Simplified Chinese. Preserve meaning, names, tone and specialist terms. Do not summarize, "
@@ -1253,7 +1566,7 @@ class DeepSeekClient:
         body = {"model": self.model, "messages": [{"role": "system", "content": system},
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
                 "response_format": {"type": "json_object"}, "max_tokens": 8192, "stream": False,
-                "thinking": {"type": "disabled"}}
+                "thinking": {"type": "disabled"}, "temperature": temperature}
         response = self.transport(body)
         usage = response.get("usage", {})
         self.input_tokens += int(usage.get("prompt_tokens", 0) or 0)
@@ -1278,7 +1591,8 @@ class DeepSeekClient:
                 right = self.translate_safe(cues[mid:], language, context, glossary)
                 return {**left, **right}
             # One controlled retry for a malformed single-cue response.
-            return self.translate(cues, language, context, glossary)
+            # 必须换温度：temperature = 0 会把同一个失败原样复现一遍。
+            return self.translate(cues, language, context, glossary, temperature=RETRY_TEMPERATURE)
 
 
 def translate_project(path, project, key, model, glossary, stop, emit, force=False, client=None):

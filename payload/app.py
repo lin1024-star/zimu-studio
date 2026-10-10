@@ -15,15 +15,18 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from core import (APP_VERSION, DEFAULT_MODEL, GLOSSARY_LIMIT, Cue, UserError, atomic_write, clean,
-                  export_files, import_srt_project, insert_project_cue, load_project,
-                  parse_time, read_srt, restore_axis_cues, save_duration_change, save_project, set_project_duration,
+                  export_files, glossary_hits, import_srt_project, insert_project_cue, load_project,
+                  parse_glossary, parse_time, read_srt, restore_axis_cues, save_duration_change,
+                  save_offset_change, save_project, set_project_duration,
                   store_imported_project, timestamp, worker, write_blocked_hint,
                   CHINESE_ONLY_KEYS, EXPORT_ITEMS, EXPORT_LABELS, SOURCE_ONLY_KEYS, ZH_KEYS,
                   BUILTIN_MODEL_REPOS, local_model_status, model_download_mb,
                   default_export_keys, default_export_selection, export_choices, should_alert)
 from diagnostics import PHASES, Diagnostics, error_info
-from dialogs import AddCueDialog, DurationDialog, ExportDialog, SrtImportDialog
+from dialogs import (AddCueDialog, AssStyleDialog, DurationDialog, ExportDialog, OffsetDialog,
+                     SrtImportDialog, TimelineQcDialog)
 from paths import data_root
+import timeline_qc
 
 APP_DIR = Path(__file__).resolve().parent
 USER_DIR = data_root()
@@ -212,6 +215,8 @@ class Application(tk.Tk):
             self.glossary_hint_var.set("术语表 %d 字（上限 %d 字）" % (count, GLOSSARY_LIMIT))
         else:
             self.glossary_hint_var.set("术语表未填写（可选，上限 %d 字）" % GLOSSARY_LIMIT)
+        # 术语表一改就重算列表里的术语标记，不用重新翻译
+        self.apply_glossary_marks()
 
     def save_settings_clicked(self):
         """手动保存并给出明确回执；自动保存是静默的，这里让使用者看得见结果。"""
@@ -349,6 +354,8 @@ class Application(tk.Tk):
         self.full_export_button = self.button(action, "导出文件…", lambda: self.manual_export(True), side="right")
         self.source_export_button = self.button(action, "仅导出原文…", lambda: self.manual_export(False), side="right", padx=8)
         self.axis_button = self.button(action, "待确认…", self.show_axis_review, side="right", padx=8)
+        self.button(action, "时间轴体检…", self.check_timeline, side="right", padx=8)
+        self.ass_style_button = self.button(action, "ASS 样式…", self.edit_ass_style, side="right", padx=8, busy=False)
         self.progress = ttk.Progressbar(main, mode="determinate", maximum=100)
         self.progress.grid(row=3, column=0, sticky="ew", pady=(0, 6))
         ttk.Label(main, textvariable=self.status_var, style="Muted.TLabel").grid(row=4, column=0, sticky="w")
@@ -358,15 +365,20 @@ class Application(tk.Tk):
         self.button(summary, "打开输出文件夹", self.open_output, busy=False, side="right")
         self.button(summary, "新增字幕…", self.add_cue, side="right", padx=8)
         self.button(summary, "时长设置…", self.set_duration, side="right")
+        self.button(summary, "整体偏移…", self.set_offset, side="right", padx=8)
 
         table = ttk.Frame(main)
         table.grid(row=6, column=0, sticky="nsew")
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
-        self.tree = ttk.Treeview(table, columns=("id", "time", "source", "zh"), show="headings", selectmode="browse", height=3)
-        for col, name, width in [("id", "序号", 45), ("time", "时间段", 210), ("source", "原文字幕", 305), ("zh", "中文字幕", 305)]:
+        self.tree = ttk.Treeview(table, columns=("id", "time", "source", "zh", "term"), show="headings", selectmode="browse", height=3)
+        for col, name, width in [("id", "序号", 45), ("time", "时间段", 185), ("source", "原文字幕", 270),
+                                 ("zh", "中文字幕", 270), ("term", "术语", 200)]:
             self.tree.heading(col, text=name)
             self.tree.column(col, width=width, minwidth=45, stretch=col in ("source", "zh"))
+        # 术语命中用底色标出来：淡黄=命中了且译名在译文里，橙红=命中了但译文里没有（可能翻漏了）
+        self.tree.tag_configure("term_ok", background="#FFF8DC")
+        self.tree.tag_configure("term_miss", background="#FFE0CC")
         self.tree.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
@@ -554,6 +566,9 @@ class Application(tk.Tk):
         self.full_export_button.configure(text="导出中文字幕…" if chinese else "导出文件…")
         self.source_export_button.configure(text="仅导出中文…" if chinese else "仅导出原文…")
         self.zh_text.configure(state="disabled" if chinese or self.busy else "normal")
+        if getattr(self, "ass_style_button", None) is not None:
+            self.ass_style_button.configure(
+                text="ASS 样式…" if (self.project or {}).get("ass") else "ASS 样式（需先导入 .ass）…")
 
     def refresh_queue_list(self):
         if self.queue_list is None:
@@ -563,8 +578,8 @@ class Application(tk.Tk):
             self.queue_list.insert("end", Path(p).name)
 
     def add_queue_files(self):
-        paths = filedialog.askopenfilenames(title="添加多个视频 / 音频 / SRT 到队列", filetypes=[
-            ("视频 / 音频 / 字幕", "*.mp4 *.mkv *.mov *.avi *.webm *.m4v *.ts *.mp3 *.wav *.m4a *.flac *.srt"), ("所有文件", "*.*")])
+        paths = filedialog.askopenfilenames(title="添加多个视频 / 音频 / 字幕到队列", filetypes=[
+            ("视频 / 音频 / 字幕", "*.mp4 *.mkv *.mov *.avi *.webm *.m4v *.ts *.mp3 *.wav *.m4a *.flac *.srt *.ass"), ("所有文件", "*.*")])
         for p in paths:
             if p not in self.queue_files:
                 self.queue_files.append(p)
@@ -609,13 +624,64 @@ class Application(tk.Tk):
         self.refresh_ass_styles()
         self.log(f"已导入 ASS 样式模板：{Path(path).name}，可选样式 {len(parts[2])} 个。")
 
+    def _ass_styles(self, path=None):
+        """读一份 .ass 的样式表。path 为空就读当前项目导入的那份。"""
+        import ass
+        try:
+            if path:
+                return ass.Document.load(path, require_events=False).styles
+            meta = (self.project or {}).get("ass") or {}
+            document = ass.Document.from_parts(meta["text"], meta["encoding"],
+                                               meta.get("bom", ""), meta.get("eol", "lf"))
+            return document.styles
+        except (KeyError, ValueError, OSError):
+            return {}
+
+    def edit_ass_style(self):
+        """改样式：字号、字体、颜色、描边。样式来源二选一，选哪一套都能改。"""
+        meta = (self.project or {}).get("ass")
+        if not meta:
+            messagebox.showinfo("ASS 样式",
+                                "改样式需要先从 .ass 导入字幕：\n\n"
+                                "点「打开项目 / SRT…」，选一个 .ass 文件，"
+                                "内容类型选「中文 ASS（保留原格式）」，确定后再点这个按钮。\n\n"
+                                "样式表是从那份 .ass 里读出来的，所以必须先导入。")
+            return
+        sources = {}
+        own = self._ass_styles()
+        if own:
+            sources["keep"] = {"label": "导入文件里的样式（%d 个）" % len(own), "styles": own}
+        template = self.ass_style_var.get().strip()
+        if template:
+            found = self._ass_styles(template)
+            if found:
+                sources["template"] = {"label": "我的模板：%s（%d 个）" % (Path(template).name, len(found)),
+                                       "styles": found, "preferred": self.ass_style_name_var.get().strip()}
+        if not sources:
+            messagebox.showinfo("ASS 样式", "这份文件里没有能识别的样式表，无法改样式。")
+            return
+        dialog = AssStyleDialog(self, sources, self.project.get("ass_style_mode", "keep"), meta.get("style_edits"))
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+        meta["style_edits"] = dialog.result["edits"]
+        meta["font_sizes"] = dialog.result["font_sizes"]
+        self.project["ass_style_mode"] = dialog.result["source"]
+        self.save_current(silent=True)
+        changed = []
+        for name, changes in dialog.result["edits"].items():
+            changed.append("%s（%s）" % (name, "、".join(sorted(changes))))
+        self.log("ASS 样式已保存：" + ("；".join(changed) if changed else "没有改动")
+                 + "。导出时写入，原 .ass 与模板文件都不会被改动。")
+        self.status_var.set("ASS 样式已保存，导出时生效。")
+
     def choose_source(self):
-        path = filedialog.askopenfilename(title="选择视频、音频或已有 SRT", filetypes=[
-            ("视频 / 音频 / 字幕", "*.mp4 *.mkv *.mov *.avi *.webm *.m4v *.ts *.mp3 *.wav *.m4a *.flac *.srt"), ("所有文件", "*.*")])
+        path = filedialog.askopenfilename(title="选择视频、音频或已有字幕", filetypes=[
+            ("视频 / 音频 / 字幕", "*.mp4 *.mkv *.mov *.avi *.webm *.m4v *.ts *.mp3 *.wav *.m4a *.flac *.srt *.ass"), ("所有文件", "*.*")])
         if path:
             if not self.save_current(silent=True):
                 return
-            if Path(path).suffix.lower() == ".srt":
+            if Path(path).suffix.lower() in (".srt", ".ass"):
                 self.import_subtitles(path)
                 return
             self._load_source(path)
@@ -644,11 +710,11 @@ class Application(tk.Tk):
             self.local_model_var.set(path)
 
     def open_project(self):
-        path = filedialog.askopenfilename(title="打开以前保存的字幕或项目", filetypes=[("项目 / SRT 字幕", "*.json *.srt"), ("SRT 字幕", "*.srt"), ("字幕项目", "*.json")])
+        path = filedialog.askopenfilename(title="打开以前保存的字幕或项目", filetypes=[("项目 / 字幕", "*.json *.srt *.ass"), ("字幕（SRT / ASS）", "*.srt *.ass"), ("字幕项目", "*.json")])
         if path:
             if not self.save_current(silent=True):
                 return
-            if Path(path).suffix.lower() == ".srt":
+            if Path(path).suffix.lower() in (".srt", ".ass"):
                 self.import_subtitles(path)
                 return
             try:
@@ -740,6 +806,71 @@ class Application(tk.Tk):
         except (UserError, OSError) as exc:
             messagebox.showerror("无法保存时长", save_error_text(exc))
 
+    def set_offset(self):
+        """整体偏移时间轴：整条轨一起提前或延后，不改时长也不动文本。"""
+        if not self.project:
+            messagebox.showinfo("先载入字幕", "请先打开项目 / SRT，或完成原文识别。")
+            return
+        if not self.save_current(silent=True):
+            return
+        dialog = OffsetDialog(self, self.project, self.selected_id)
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+        try:
+            _updated, report, backup = save_offset_change(self.project_path, self.project, **dialog.result)
+            self.reload_project(self.project_path)
+            if report["changed_count"]:
+                moved = report["effective_ms"] / 1000
+                direction = "往后挪" if moved > 0 else "往前挪"
+                self.status_var.set(f"已把 {report['changed_count']} 条字幕整体{direction} "
+                                    f"{abs(moved):g} 秒；原文与译文保留。")
+                self.log("平移前项目备份：" + str(backup))
+                if report["clamped"]:
+                    self.log(f"注意：请求偏移 {report['requested_ms'] / 1000:g} 秒，"
+                             f"但最早一条在 {report['earliest_ms'] / 1000:g} 秒处，"
+                             f"为避免出现负数，实际只挪了 {abs(moved):g} 秒。")
+            else:
+                self.status_var.set("偏移量为 0，字幕没有变化。")
+        except (UserError, OSError) as exc:
+            messagebox.showerror("无法保存偏移", save_error_text(exc))
+
+    def glossary_marks(self):
+        """按术语表算出每条字幕的术语命中：{id: (显示文字, 底色标签)}。
+
+        术语表里按「原文 = 译名」一行一条写；命中而译文里没有对应的译名，就标出来——
+        那才是真正要核对的东西。整个过程纯本地计算，不联网、不花钱，也不改字幕本身。
+        """
+        terms = parse_glossary(self.glossary.get("1.0", "end-1c"))
+        marks = {}
+        if not terms or not self.project:
+            return marks
+        for row in self.project["cues"]:
+            matched, missing = glossary_hits(terms, row.get("source") or "", row.get("zh") or "")
+            if not matched and not missing:
+                continue
+            parts = ["%s=%s" % (term, value) for term, value in matched]
+            parts += ["⚠%s=%s" % (term, value) for term, value in missing]
+            shown = parts[:3]
+            if len(parts) > 3:
+                shown.append("等 %d 个" % len(parts))
+            marks[row["id"]] = ("、".join(shown), "term_miss" if missing else "term_ok")
+        return marks
+
+    def apply_glossary_marks(self):
+        """刷新列表里的术语标记。改术语表会立刻重算，不需要重新翻译。"""
+        if not getattr(self, "tree", None):
+            return
+        marks = self.glossary_marks()
+        for row in (self.project or {}).get("cues", []):
+            ident = str(row["id"])
+            if not self.tree.exists(ident):
+                continue
+            label, tag = marks.get(row["id"], ("", ""))
+            values = (row["id"], timestamp(row["start"]) + " — " + timestamp(row["end"]),
+                      row.get("source") or "", row.get("zh") or "待翻译", label)
+            self.tree.item(ident, values=values, tags=(tag,) if tag else ())
+
     def reload_project(self, path):
         p = load_project(path)
         selected = self.selected_id if self.project_path == str(path) else None
@@ -758,6 +889,7 @@ class Application(tk.Tk):
             self.tree.move(ident, "", position)
         count = sum(bool(clean(c["zh"])) for c in p["cues"])
         self.summary_var.set(f"原语言：{p.get('language', '—')}     原文 {len(p['cues'])} 条     中文 {count} 条")
+        self.apply_glossary_marks()
         if selected and str(selected) in rows:
             self.selected_id = selected
             self.tree.selection_set(str(selected))
@@ -824,8 +956,9 @@ class Application(tk.Tk):
             except OSError:
                 row.update(old)
                 raise
-            values = (c.id, timestamp(c.start) + " — " + timestamp(c.end), c.source, c.zh or "待翻译")
+            values = (c.id, timestamp(c.start) + " — " + timestamp(c.end), c.source, c.zh or "待翻译", "")
             self.tree.item(str(c.id), values=values)
+            self.apply_glossary_marks()
             if self.project.get("subtitle_mode") == "chinese":
                 self.zh_text.configure(state="normal")
                 self.zh_text.delete("1.0", "end")
@@ -896,12 +1029,12 @@ class Application(tk.Tk):
         if not self.source_var.get() and not self.project_path:
             if self.in_queue and self.queue_index < len(self.queue_files):
                 path = self.queue_files[self.queue_index]
-                if Path(path).suffix.lower() == ".srt":
+                if Path(path).suffix.lower() in (".srt", ".ass"):
                     self.import_subtitles(path)
                 else:
                     self._load_source(path)
             else:
-                messagebox.showinfo("选择素材", "请先选择视频、音频或原文 SRT 文件。")
+                messagebox.showinfo("选择素材", "请先选择视频、音频或原文 SRT / ASS 字幕文件。")
                 return
         if not self.save_current(silent=True):
             return
@@ -950,7 +1083,7 @@ class Application(tk.Tk):
             messagebox.showinfo("输出目录", "请先选择输出目录。")
             return
         local = self.local_model_var.get().strip()
-        needs_asr = not (self.project or {}).get("recognition_complete") and Path(self.source_var.get()).suffix.lower() != ".srt"
+        needs_asr = not (self.project or {}).get("recognition_complete") and Path(self.source_var.get()).suffix.lower() not in (".srt", ".ass")
         if needs_asr and local and not (Path(local) / "model.bin").is_file():
             messagebox.showerror("模型目录", "本地模型文件夹中没有 model.bin。请选择完整的 faster-whisper 模型，或清空该字段自动下载。")
             return
@@ -1192,6 +1325,84 @@ class Application(tk.Tk):
         if parts:
             self.log("待确认：" + "、".join(parts) + "。点「待确认…」查看，程序不会替你删改。")
 
+    def check_timeline(self):
+        """时间轴体检：不听音频，只查字幕本身的硬伤。
+
+        为什么不做「和音频对齐」：实测过两种不需要额外依赖的做法
+        （VAD 覆盖率、能量起音比对），在 BGM 铺满的素材上都找不回已知偏移，
+        详见 timeline_qc 模块开头的记录。所以改查这些真正会出事故的：
+        叠字、闪帧、时间倒着走、看不清、读不完、成段漏句。
+        """
+        if not self.project or not self.project.get("cues"):
+            messagebox.showinfo("先载入字幕", "请先打开项目 / SRT，或完成原文识别。")
+            return
+        if not self.save_current(silent=True):
+            return
+        cues = timeline_qc.cues_from_rows(self.project["cues"])
+        result = timeline_qc.check_timeline(cues, duration=self._timeline_duration())
+        self.log(timeline_qc.summarize(result))
+        for kind, count in sorted(result["counts"].items(), key=lambda kv: -kv[1]):
+            title = timeline_qc.KINDS[kind][0]
+            level = timeline_qc.SEVERITY_LABEL[timeline_qc._severity(kind)]
+            self.log(f"    [{level}] {title}：{count} 处")
+        dialog = TimelineQcDialog(self, result, on_jump=self.jump_to_cue,
+                                  on_fix=self.fix_timeline)
+        self.wait_window(dialog)
+
+    def _timeline_duration(self):
+        """片长：优先用识别时记下的时长，没有就用最后一条的结束时间。"""
+        info = (self.project or {}).get("recognition") or {}
+        if isinstance(info, dict) and info.get("duration"):
+            try:
+                return float(info["duration"])
+            except (TypeError, ValueError):
+                pass
+        cues = (self.project or {}).get("cues") or []
+        return max((float(c["end"]) for c in cues), default=None)
+
+    def jump_to_cue(self, cue_id):
+        """跳到指定条目并选中，让体检结果能一条条看过去。"""
+        ident = str(cue_id)
+        if not self.tree.exists(ident):
+            return
+        self.tree.selection_set(ident)
+        self.tree.focus(ident)
+        self.tree.see(ident)
+        self.show_selected()
+
+    def fix_timeline(self, issues):
+        """一键修安全的项：时间倒着走、叠字、间隙过小。改前自动备份。"""
+        count = sum(1 for it in issues if it.get("fixable"))
+        if not count:
+            return False
+        if not messagebox.askyesno(
+                "一键修时间轴",
+                f"要修 {count} 处只涉及时间的毛病吗？\n\n"
+                "· 只修：时间倒着走、两条叠在一起、间隙太小会闪\n"
+                "· 不修：太短、太长、读不完 —— 那些要重排句子，得你自己看\n"
+                "· 文字和译文一个字都不会动\n\n"
+                "改之前会自动备份一份项目文件。"):
+            return False
+        try:
+            _updated, changes, backup = timeline_qc.save_fix(self.project_path, self.project)
+        except (UserError, OSError) as exc:
+            messagebox.showerror("无法保存", save_error_text(exc))
+            return False
+        if not changes:
+            messagebox.showinfo("不用修", "检查了一遍，没有可以自动修的地方。")
+            return False
+        self.reload_project(self.project_path)
+        self.status_var.set(f"时间轴已修 {len(changes)} 处；原文与译文未改动。")
+        self.log(f"时间轴体检：修了 {len(changes)} 处（倒序 / 叠字 / 闪帧）。")
+        self.log("修改前项目备份：" + str(backup))
+        remaining = timeline_qc.check_timeline(
+            timeline_qc.cues_from_rows(self.project["cues"]), duration=self._timeline_duration())
+        self.log(timeline_qc.summarize(remaining))
+        messagebox.showinfo("修好了",
+                            f"修了 {len(changes)} 处。\n\n" + timeline_qc.summarize(remaining) +
+                            "\n\n超短、超长、读不完这些没动 —— 那些要重排句子，请看「时间轴体检」的列表。")
+        return True
+
     def show_axis_review(self):
         """列出识别后要人工确认的位置，并允许还原整理前的轴。
 
@@ -1294,6 +1505,41 @@ class Application(tk.Tk):
             except tk.TclError:
                 pass
 
+    def ass_style_choice(self):
+        """导出对话框里那一段「ASS 样式」：只对从 .ass 导入的项目显示。"""
+        if not (self.project or {}).get("ass"):
+            return None
+        path = self.ass_style_var.get().strip()
+        label = ""
+        if path:
+            label = "%s · %s" % (Path(path).name, self.ass_style_name_var.get().strip() or "Default")
+        return {"label": label, "available": bool(path)}
+
+    def style_edit_warning(self):
+        """改了样式、但这次导出用不上时说清楚原因。
+
+        样式改动是按样式名记账的，而「导入文件的样式」和「我的模板」各有一套名字。
+        改在 A 上却用 B 导出，改动会静默失效——这是最难查的一种失败，所以要主动拦一下。
+        """
+        meta = (self.project or {}).get("ass")
+        edits = (meta or {}).get("style_edits") or {}
+        if not edits:
+            return ""
+        if self.project.get("ass_style_mode") == "template":
+            template = self.ass_style_var.get().strip()
+            names = set(self._ass_styles(template)) if template else set()
+            where = "你的模板"
+        else:
+            names = set(self._ass_styles())
+            where = "导入的那份文件"
+        missing = sorted(name for name in edits if name not in names)
+        if not missing:
+            return ""
+        return ("你改过样式「%s」，但这次导出用的是%s的样式（%s），里面没有这个名字，"
+                "改动的字号和颜色不会生效。\n\n"
+                "请点「ASS 样式…」，把「样式从哪来」切到包含它的那一套，再导出。"
+                % ("、".join(missing), where, "、".join(sorted(names)) or "空"))
+
     def manual_export(self, include_zh, ask=True):
         if not self.project or not self.save_current(silent=True):
             if not self.project:
@@ -1311,12 +1557,19 @@ class Application(tk.Tk):
             disabled = {key for key, _ in choices if key in ZH_KEYS and not translated}
             note = f"还有 {missing} 条没有中文译文，中文相关项已暂时禁用；可以先导出原文或空轴。" if missing else ""
             dialog = ExportDialog(self, choices, default_export_selection(include_zh, chinese_only, translated),
-                                  disabled=disabled, blank_format=blank_format, note=note)
+                                  disabled=disabled, blank_format=blank_format, note=note,
+                                  ass_style=self.ass_style_choice(),
+                                  ass_style_mode=self.project.get("ass_style_mode", "keep"))
             self.wait_window(dialog)
             if dialog.result is None:
                 return
             include = dialog.result["include"]
             self.last_blank_format = blank_format = dialog.result["blank_format"]
+            if "ass_style_mode" in dialog.result:
+                self.project["ass_style_mode"] = dialog.result["ass_style_mode"]
+        warning = self.style_edit_warning()
+        if warning and not messagebox.askyesno("样式改动对不上", warning + "\n\n仍然要导出吗？"):
+            return
         try:
             self.diagnostics.start_task({"mode": "manual_export", "device": "not_used"})
             self.diagnostics.record("media_info", actual_device="not_used")

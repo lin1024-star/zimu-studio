@@ -1,5 +1,28 @@
-字幕工坊 2.0 懒人包验证记录
+字幕工坊 2.1 懒人包验证记录
 生成日期：2026-10-03（在 Windows 10/11 x64 实机执行）
+更新日期：2026-10-10（2.1）
+
+【2.1 验证（2026-10-10）】
+1. 测试：Python 316 项通过（skipped=1；2.0 为 189 项）；安装器逻辑 28 项通过（2.0 为 23 项）。
+   其中 manifest_and_embedded_payload 检查 payload.zip 里确实存在 models/Kim_Vocal_2.onnx，
+   缺模型时构建验证直接失败，避免把残缺的包发出去。
+2. 安装器重编译：改动 payload（新增 lib/LICENSES.txt、补 关于本软件.txt 的署名）后重新编译并
+   复跑测试，62,579,712 → 62,582,272 字节（+2,560，即许可文件压缩后的大小）。
+3. 许可合规补齐（本轮发现的问题）：payload/lib 下的 cffi 2.1.1、pycparser 3.00、soundcard
+   原先只有源码、没有随附许可文件。MIT 与 BSD 都要求分发时附带许可全文，故新增
+   payload/lib/LICENSES.txt 收录三份许可原文（cffi 是 MIT No Attribution，另两个是
+   BSD 3-Clause），并在 payload/关于本软件.txt 与 THIRD_PARTY.txt 补上署名。
+4. LICENSE.txt 恢复为标准 MIT 全文：原先末尾多了一段第三方说明，GitHub 因此把本仓库识别成
+   "Other" 而不是 MIT。该段移入 THIRD_PARTY.txt，LICENSE.txt 现在只含标准 MIT 正文。
+5. 实时中文字幕随包分发：payload/live/（7 个源文件）+ payload/lib/（soundcard、cffi、
+   pycparser）。已验证打包与导入路径正确（live/studio.py 会优先找随包的 lib 目录）。
+   注意：这一版的入口不在主程序界面上，需要单独运行；接入界面留到下一版。
+6. 本轮未做的验证（据实记录，不要当成已验证）：
+   - 实时中文字幕没有用随包路径做端到端实机识别（只验证了打包与导入路径）。
+   - ASS 保真读写没有拿真实带样式的 .ass 模板逐字节比对（测试覆盖的是解析与重建逻辑）。
+   - GPU 路径沿用 2.0 结论，本轮未重跑。
+   - 时间轴体检的判定阈值（时长上下限、语速、静音）来自通用经验值，只在少量素材上看过，
+     没有做跨素材的阈值标定。
 
 【2.0 补充验证（2026-10-05）】
 1. 测试：Python 189 项通过（skipped=1）；安装器逻辑 23 项通过，其中新增一项检查

@@ -14,7 +14,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "payload"))
 import core
-from core import (Cancelled, Cue, DEFAULT_EXPORT_KEYS, DeepSeekClient, GLOSSARY_LIMIT, ResponseError, UserError,
+from core import (Cancelled, Cue, DEFAULT_EXPORT_KEYS, DeepSeekClient, GLOSSARY_LIMIT, ResponseError,
+                  RETRY_TEMPERATURE, TRANSLATE_TEMPERATURE, UserError,
                   clean, cues_from_segments, default_export_keys, default_export_selection,
                   export_blank, export_choices, export_files, fingerprint, format_blank_ass,
                   format_blank_srt, format_srt, load_project, read_srt, run_job, save_project,
@@ -690,6 +691,187 @@ class GlossaryTests(unittest.TestCase):
 
     def test_limit_is_the_number_the_interface_tells_users(self):
         self.assertEqual(GLOSSARY_LIMIT, 6000)
+
+
+class TranslationTemperatureTests(unittest.TestCase):
+    """翻译必须固定 temperature。
+
+    实测：不设 temperature（DeepSeek 默认 1.0）时，同一份素材、同样的设置重翻一遍，
+    63%~70% 的句子会换个说法，人工校对过的地方等于白校。改成 0 后降到 32%~48%。
+    """
+
+    def reply_once(self, text="你好", finish="stop"):
+        return {"choices": [{"finish_reason": finish,
+                             "message": {"content": json.dumps({"translations": [{"id": 1, "text": text}]})}}],
+                "usage": {}}
+
+    def test_every_translation_request_pins_temperature(self):
+        seen = []
+
+        def transport(body):
+            seen.append(body.get("temperature"))
+            return self.reply_once()
+
+        DeepSeekClient("sk-test", transport=transport).translate([Cue(1, 0.0, 1.0, "Hello")], "en", [], "")
+        self.assertEqual(seen, [TRANSLATE_TEMPERATURE])
+        self.assertEqual(TRANSLATE_TEMPERATURE, 0)
+
+    def test_single_cue_retry_must_not_reuse_the_same_temperature(self):
+        """temperature=0 会把同一个失败原样复现，所以单条重试必须换个温度。"""
+        seen = []
+
+        def transport(body):
+            seen.append(body["temperature"])
+            if len(seen) == 1:
+                return {"choices": [{"finish_reason": "stop", "message": {"content": "不是 JSON"}}], "usage": {}}
+            return self.reply_once()
+
+        client = DeepSeekClient("sk-test", transport=transport)
+        self.assertEqual(client.translate_safe([Cue(1, 0.0, 1.0, "Hello")], "en", [], ""), {1: "你好"})
+        self.assertEqual(len(seen), 2)
+        self.assertNotEqual(seen[0], seen[1])
+
+    def test_retry_temperature_is_still_a_normal_sampling_value(self):
+        self.assertGreater(RETRY_TEMPERATURE, 0)
+        self.assertLessEqual(RETRY_TEMPERATURE, 1)
+
+    def test_split_batches_keep_the_pinned_temperature(self):
+        """拆小重试是为了换输入，不是为了换随机性；拆出来的每一批仍要用固定温度。"""
+        seen = []
+
+        def transport(body):
+            seen.append(body["temperature"])
+            expected = [c["id"] for c in json.loads(body["messages"][1]["content"])["cues"]]
+            if len(expected) > 1:
+                return {"choices": [{"finish_reason": "length", "message": {"content": "{}"}}], "usage": {}}
+            return {"choices": [{"finish_reason": "stop",
+                                 "message": {"content": json.dumps({"translations": [{"id": expected[0], "text": "好"}]})}}],
+                    "usage": {}}
+
+        client = DeepSeekClient("sk-test", transport=transport)
+        got = client.translate_safe([Cue(1, 0.0, 1.0, "A"), Cue(2, 1.0, 2.0, "B")], "en", [], "")
+        self.assertEqual(got, {1: "好", 2: "好"})
+        self.assertEqual(set(seen), {TRANSLATE_TEMPERATURE})
+
+
+class OffsetTests(unittest.TestCase):
+    """整体偏移时间轴：整条轨一起挪，不改变时长和间隔，也不会挪出负数。"""
+
+    def project(self):
+        return {"version": 1, "input": "x.mp4", "cues": [
+            {"id": 1, "start": 1.0, "end": 2.5, "source": "あ", "zh": "啊"},
+            {"id": 2, "start": 3.0, "end": 4.25, "source": "い", "zh": "咦"},
+            {"id": 3, "start": 5.5, "end": 6.0, "source": "う", "zh": "呜"},
+        ]}
+
+    def test_moves_every_cue_forward(self):
+        updated, report = core.set_project_offset(self.project(), "1.5")
+        self.assertEqual(report["changed_count"], 3)
+        self.assertEqual(report["effective_ms"], 1500)
+        self.assertFalse(report["clamped"])
+        self.assertEqual([r["start"] for r in updated["cues"]], [2.5, 4.5, 7.0])
+        self.assertEqual([r["end"] for r in updated["cues"]], [4.0, 5.75, 7.5])
+
+    def test_moves_every_cue_backward(self):
+        updated, report = core.set_project_offset(self.project(), "-0.5")
+        self.assertEqual(report["effective_ms"], -500)
+        self.assertEqual([r["start"] for r in updated["cues"]], [0.5, 2.5, 5.0])
+
+    def test_duration_and_gaps_are_untouched(self):
+        before = self.project()["cues"]
+        updated, _ = core.set_project_offset(self.project(), "2.25")
+        after = updated["cues"]
+        for a, b in zip(before, after):
+            self.assertAlmostEqual(a["end"] - a["start"], b["end"] - b["start"], places=6)
+        gaps_before = [b["start"] - a["end"] for a, b in zip(before, before[1:])]
+        gaps_after = [b["start"] - a["end"] for a, b in zip(after, after[1:])]
+        for a, b in zip(gaps_before, gaps_after):
+            self.assertAlmostEqual(a, b, places=6)
+
+    def test_never_pushes_time_negative(self):
+        """往前挪太多时整条轨停在 0 秒，而不是把个别条目单独截断。"""
+        updated, report = core.set_project_offset(self.project(), "-10")
+        self.assertTrue(report["clamped"])
+        self.assertEqual(report["requested_ms"], -10000)
+        self.assertEqual(report["effective_ms"], -1000)   # 最早一条在 1.0 秒
+        starts = [r["start"] for r in updated["cues"]]
+        self.assertEqual(starts[0], 0.0)
+        self.assertTrue(all(s >= 0 for s in starts))
+        # 关键：相对间隔仍然是 2.0 和 2.5，没被压变形
+        self.assertAlmostEqual(starts[1] - starts[0], 2.0, places=6)
+        self.assertAlmostEqual(starts[2] - starts[1], 2.5, places=6)
+
+    def test_zero_offset_changes_nothing(self):
+        updated, report = core.set_project_offset(self.project(), "0")
+        self.assertEqual(report["changed_count"], 0)
+        self.assertEqual(report["effective_ms"], 0)
+        self.assertEqual(updated["cues"], self.project()["cues"])
+
+    def test_single_cue_scope(self):
+        updated, report = core.set_project_offset(self.project(), "1", cue_ids=[2])
+        self.assertEqual(report["target_count"], 1)
+        self.assertEqual(report["changed_count"], 1)
+        by_id = {r["id"]: r for r in updated["cues"]}
+        self.assertEqual(by_id[1]["start"], 1.0)       # 没选的没动
+        self.assertEqual(by_id[2]["start"], 4.0)
+        self.assertEqual(by_id[3]["start"], 5.5)
+
+    def test_single_cue_clamp_uses_that_cue(self):
+        """只挪一条时，「最早一条」是这条自己的开始时间。"""
+        updated, report = core.set_project_offset(self.project(), "-5", cue_ids=[2])
+        self.assertTrue(report["clamped"])
+        self.assertEqual(report["effective_ms"], -3000)   # 第 2 条在 3.0 秒
+        by_id = {r["id"]: r for r in updated["cues"]}
+        self.assertEqual(by_id[2]["start"], 0.0)
+        self.assertEqual(by_id[1]["start"], 1.0)
+
+    def test_millisecond_and_sign_forms(self):
+        for text, expected in (("+0.750", 750), ("-0.750", -750), (".5", 500),
+                               ("1", 1000), ("-1", -1000), ("0.001", 1)):
+            with self.subTest(text=text):
+                self.assertEqual(core.offset_milliseconds(text), expected)
+
+    def test_rejects_bad_input(self):
+        for text in ("", "abc", "1.2345", "--1", "1 秒", "1e3", "一"):
+            with self.subTest(text=text):
+                with self.assertRaises(UserError):
+                    core.offset_milliseconds(text)
+
+    def test_rejects_out_of_range(self):
+        with self.assertRaises(UserError):
+            core.offset_milliseconds("86401")
+        with self.assertRaises(UserError):
+            core.offset_milliseconds("-86401")
+
+    def test_rejects_empty_project(self):
+        with self.assertRaises(UserError):
+            core.set_project_offset({"cues": []}, "1")
+
+    def test_rejects_unknown_cue_id(self):
+        with self.assertRaises(UserError):
+            core.set_project_offset(self.project(), "1", cue_ids=[99])
+
+    def test_save_offset_change_backs_up_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "project.json"
+            save_project(path, self.project())
+            updated, report, backup = core.save_offset_change(path, self.project(), "1")
+            self.assertEqual(report["changed_count"], 3)
+            self.assertIsNotNone(backup)
+            self.assertTrue(Path(backup).is_file())
+            self.assertIn("project_before_offset_", Path(backup).name)
+            # 备份里是挪之前的时间
+            self.assertEqual(load_project(backup)["cues"][0]["start"], 1.0)
+            # 原地文件是挪之后的时间
+            self.assertEqual(load_project(path)["cues"][0]["start"], 2.0)
+
+    def test_save_offset_change_skips_backup_when_nothing_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "project.json"
+            save_project(path, self.project())
+            _updated, report, backup = core.save_offset_change(path, self.project(), "0")
+            self.assertEqual(report["changed_count"], 0)
+            self.assertIsNone(backup)
 
 
 class SeparateVocalsTests(unittest.TestCase):
