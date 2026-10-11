@@ -22,7 +22,7 @@ from pathlib import Path
 from diagnostics import error_info
 from paths import data_root
 
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 DEFAULT_MODEL = "deepseek-flash"
 API_URL = "https://api.deepseek.com/chat/completions"
 LANGUAGES = {"en": "英语", "ja": "日语", "zh": "中文"}
