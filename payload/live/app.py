@@ -49,23 +49,63 @@ GLOSSARY_EXTRA = DATA_ROOT / "live_glossary_extra.txt"
 SETTINGS_PATH = DATA_ROOT / "实时字幕_设置.json"
 
 
+def read_settings():
+    """读设置文件。任何一项坏了都不该让软件起不来，所以整段容错。"""
+    try:
+        data = json.loads(SETTINGS_PATH.read_text("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def write_settings(**changes):
+    """只改指定的那几项，其余原样保留。
+
+    ⚠️ 这里以前是整个覆盖写 {"source_id": ...} —— 那样**切一次音源就会把外观设置抹掉**。
+    现在改成读出来、改一项、再写回去。写失败也不抛，只记一行日志。
+    """
+    data = read_settings()
+    data.update(changes)
+    try:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        return True
+    except OSError as exc:
+        log(f"设置没有记住（{exc}）")
+        return False
+
+
 def load_source_id():
     """读出上次选的音源。读不到就用默认（跟着系统默认播放设备走）。"""
-    try:
-        value = json.loads(SETTINGS_PATH.read_text("utf-8")).get("source_id")
-        return value if isinstance(value, str) and value else DEFAULT_SOURCE
-    except Exception:  # noqa: BLE001
-        return DEFAULT_SOURCE
+    value = read_settings().get("source_id")
+    return value if isinstance(value, str) and value else DEFAULT_SOURCE
 
 
 def save_source_id(source_id):
-    try:
-        SETTINGS_PATH.write_text(json.dumps({"source_id": source_id}, ensure_ascii=False, indent=1),
-                                 encoding="utf-8")
-        return True
-    except OSError as exc:
-        log(f"音频来源没有记住（{exc}）")
-        return False
+    return write_settings(source_id=source_id)
+
+
+def load_appearance():
+    """读出上次调的悬浮字幕外观（透明度 / 字号 / 宽度）。
+
+    只认识这几项；多余或坏掉的键直接丢掉，交给 overlay 那边补默认值。
+    """
+    value = read_settings().get("appearance")
+    if not isinstance(value, dict):
+        return {}
+    allowed = ("alpha", "font", "width")
+    result = {}
+    for key in allowed:
+        if key in value:
+            try:
+                result[key] = float(value[key]) if key == "alpha" else int(value[key])
+            except (TypeError, ValueError):
+                pass
+    return result
+
+
+def save_appearance(appearance):
+    return write_settings(appearance={k: appearance[k] for k in ("alpha", "font", "width") if k in appearance})
 
 
 def log(msg):
@@ -102,6 +142,7 @@ class LiveApp:
         self.zh_lengths = []
         self.seen_ids = set()
         self.source_id = load_source_id()
+        self.appearance = load_appearance()
         self.overlay = Overlay(
             on_quit=self.shutdown,
             on_toggle_pause=self.toggle_pause,
@@ -111,7 +152,15 @@ class LiveApp:
             list_sources=list_sources,
             on_pick_source=self.switch_source,
             source_id=self.source_id,
+            appearance=self.appearance,
+            on_save_appearance=self.remember_appearance,
         )
+
+    # ---------- 外观 ----------
+    def remember_appearance(self, appearance):
+        """把调好的外观记下来，下次打开还是这样。"""
+        self.appearance = dict(appearance)
+        save_appearance(appearance)
 
     # ---------- 音频来源 ----------
     def switch_source(self, source_id):
