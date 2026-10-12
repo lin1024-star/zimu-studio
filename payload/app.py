@@ -24,8 +24,8 @@ from core import (APP_VERSION, DEFAULT_MODEL, GLOSSARY_LIMIT, Cue, DeepSeekClien
                   BUILTIN_MODEL_REPOS, local_model_status, model_download_mb,
                   default_export_keys, default_export_selection, export_choices, should_alert)
 from diagnostics import PHASES, Diagnostics, error_info
-from dialogs import (AddCueDialog, AssStyleDialog, DurationDialog, ExportDialog, JaIssueDialog,
-                     OffsetDialog, SrtImportDialog, TimelineQcDialog)
+from dialogs import (AddCueDialog, AssStyleDialog, DurationDialog, ExportDialog, JaFixConfirmDialog,
+                     JaIssueDialog, OffsetDialog, SrtImportDialog, TimelineQcDialog)
 from paths import data_root
 import ja_fix
 import timeline_qc
@@ -875,19 +875,31 @@ class Application(tk.Tk):
             approved = ja_fix.matches_note(before_zh, box["zh"], keywords)
             self.log("判官没答上来，改用本地关键词兜底核对。")
         if not approved:
-            self.log(f"试翻出来的中文是「{box['zh']}」，没对上你说的意思，不敢自动写表，改为记下来。")
-            self.save_issue(row, name, note)
-            return
+            # 机器自己不确定 —— 但**使用者说了算**：把改法和试翻结果摆给他，让他决定。
+            self.log(f"机器不确定（试翻出来是「{box['zh']}」），交给他决定要不要用。")
+            dialog = JaFixConfirmDialog(
+                self, row, fix, box["zh"],
+                f"按这个改法试翻出来的中文是「{box['zh']}」，跟你要的意思对不上。")
+            self.wait_window(dialog)
+            if dialog.result != "apply":
+                if dialog.result == "record":
+                    self.save_issue(row, name, note)
+                return
+            self.log(f"他说了算：按 {fix['wrong']} = {fix['right']} 写进纠正表。")
+        self.write_rule(row, fix, box["zh"], note)
+
+    def write_rule(self, row, fix, trial_zh, note):
+        """把规则写进纠正表，并立刻套到当前项目上。"""
         state = ja_fix.append_rule(fix["wrong"], fix["right"], note)
         if state == "conflict":
             messagebox.showwarning("纠正表里有冲突",
                                    f"表里已经有「{fix['wrong']} = 别的写法」，没有覆盖它。\n\n"
-                                   f"模型建议的是：{fix['wrong']} = {fix['right']}\n"
+                                   f"这次的改法是：{fix['wrong']} = {fix['right']}\n"
                                    "想改的话，请手动编辑 D:\\字幕工坊\\日文纠正表.txt。")
             return
         if state == "error":
             self.log("写纠正表失败（可能没有写入权限），改为记下来。")
-            self.save_issue(row, name, note)
+            self.save_issue(row, "", note)
             return
         changed = self.apply_rule_now(fix["wrong"], fix["right"])
         if state == "exists":
@@ -898,7 +910,7 @@ class Application(tk.Tk):
             "改好了",
             f"这句的原句：{row.get('source') or ''}\n"
             f"改对之后：{fix['fixed']}\n"
-            f"试翻结果：{box['zh']}\n\n"
+            f"试翻结果：{trial_zh}\n\n"
             f"已经写进纠正表（{fix['wrong']} = {fix['right']}），"
             f"本片里又改对了 {changed} 条。\n"
             "以后所有视频遇到同一个错，都会自动改对。")

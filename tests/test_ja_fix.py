@@ -495,6 +495,14 @@ class GuessFixTest(unittest.TestCase):
         ja_fix.guess_fix(self.TEXT, "", "应该是贪污", [], client)
         self.assertIn("JSON", client.calls[0]["system"])
 
+    def test_the_prompt_says_use_kanji_not_kana(self):
+        """真踩过：模型给了「おしょく」（假名），试翻成"想被请客 / 超喜欢职场"。
+
+        所以提示词必须明确要求写汉字 —— 这条是那次事故的回归保护。
+        """
+        self.assertIn("不要只给假名", ja_fix.FIX_SYSTEM)
+        self.assertIn("汉字", ja_fix.FIX_SYSTEM)
+
 
 class JudgeFixTest(unittest.TestCase):
     """让模型当判官：改后的译文对不对得上他说的意思。
@@ -522,6 +530,61 @@ class JudgeFixTest(unittest.TestCase):
 
     def test_a_silent_judge_is_treated_as_no(self):
         self.assertFalse(ja_fix.judge_fix("x", "a", "b", FakeClient({})))
+
+
+class KanaUpgradeTest(unittest.TestCase):
+    """模型只给假名读音时，自动再问一次汉字写法。
+
+    真事故（2026-10-12 第 24 条）：模型给了「お食 → おしょく」，试翻成
+    "哎呀，还是想被请客啊～"，判官判"对不上"，于是把使用者的反馈驳回了。
+    他说的没错（就是贪污），是这条链路漏了一步。
+    """
+
+    class TwoStep:
+        """第一次给假名，第二次（问汉字时）给汉字。"""
+
+        def __init__(self, kanji="汚職"):
+            self.kanji = kanji
+            self.calls = []
+
+        def json_chat(self, system, user, max_tokens=800):
+            self.calls.append(system)
+            # 注意：不能用"汉字"两个字来判断是第二次调用 ——
+            # 主提示词里也写了"要写汉字"，用它会把第一次也当成问汉字（测试踩过）
+            if "读音（假名）" in user or "该写的汉字" in system:
+                return {"kanji": self.kanji}
+            return {"wrong": "お食", "right": "おしょく",
+                    "fixed": "おしょく大好き警察官", "why": "同音"}
+
+    def test_a_kana_answer_is_upgraded_to_kanji(self):
+        client = self.TwoStep()
+        fix = ja_fix.guess_fix("お食大好き警察官", "吃饭的警察", "应该是贪污", [], client)
+        self.assertEqual(fix["right"], "汚職")
+        self.assertEqual(fix["fixed"], "汚職大好き警察官")
+        self.assertEqual(len(client.calls), 2, "应该多问了一次汉字写法")
+
+    def test_it_does_not_ask_twice_when_the_answer_is_already_kanji(self):
+        client = FakeClient({"wrong": "お食", "right": "汚職",
+                             "fixed": "汚職大好き警察官", "why": ""})
+        ja_fix.guess_fix("お食大好き警察官", "", "应该是贪污", [], client)
+        self.assertEqual(len(client.calls), 1)
+
+    def test_a_word_that_is_really_kana_is_left_alone(self):
+        # 像 おしゃべり 这种本来就是假名 —— 拿不到汉字就保持原样，不硬改
+        client = self.TwoStep(kanji="")
+        fix = ja_fix.guess_fix("お食大好き警察官", "", "应该是话多", [], client)
+        self.assertEqual(fix["right"], "おしょく")
+
+    def test_kanji_form_refuses_kana_or_rubbish(self):
+        for payload in ({"kanji": "おしょく"}, {"kanji": ""}, {"kanji": "汚職 警官"},
+                        {"kanji": "很长很长很长的词"}):
+            self.assertEqual(ja_fix.kanji_form("おしょく", "句", "note", FakeClient(payload)), "", payload)
+
+    def test_kanji_form_swallows_errors(self):
+        class Boom:
+            def json_chat(self, *a, **k):
+                raise RuntimeError("网络断了")
+        self.assertEqual(ja_fix.kanji_form("おしょく", "句", "note", Boom()), "")
 
 
 class NoteKeywordsTest(unittest.TestCase):

@@ -350,6 +350,9 @@ FIX_SYSTEM = (
     "你是日语字幕校对。用户告诉你：这句语音识别的结果里有一个词听错了，"
     "并且用中文说明了这句话**应该是什么意思**。"
     "请把听错的那个词改成正确的日文写法 —— 只改那一处，其余一个字都不要动。"
+    "**正确写法要写平时书写时的汉字，不要只给假名读音** —— 假名有歧义，"
+    "翻译会猜成别的意思（实测：「おしょく」被翻成「想被请客」「超喜欢职场」）。"
+    "只有那个词本来就是假名（例如 おしゃべり）时才写假名。"
     '只输出 JSON：{"wrong":"","right":"","fixed":"","why":""}；'
     "fixed 是改好之后的整句日文；整句看着没错就把 wrong 和 fixed 留空。"
 )
@@ -373,11 +376,42 @@ def guess_fix(text, current_zh, note, context_texts, client):
     fixed = (data.get("fixed") or "").strip()
     if not wrong or not right or not fixed or wrong == right or wrong not in text:
         return None
+    # 它只给了假名读音 —— 假名有歧义，翻译会猜歪（实测「おしょく」被翻成
+    # "想被请客""超喜欢职场"）。再问一次它的汉字写法。
+    if _KANA_ONLY.match(right) and not _KANA_ONLY.match(wrong):
+        kanji = kanji_form(right, text, note, client)
+        if kanji:
+            right = kanji
+            fixed = text.replace(wrong, right)
     # 它说改好了，但除了那一处还动了别的字 → 不敢信，退回人工
     if fixed != text.replace(wrong, right):
         return None
     return {"wrong": wrong, "right": right, "fixed": fixed,
             "why": (data.get("why") or "").strip()}
+
+
+_KANA_ONLY = re.compile(r"^[\u3040-\u309f\u30a0-\u30ffー]+$")
+
+KANJI_SYSTEM = (
+    "用户在给日语字幕挑错。他已经知道某个词的读音（假名），"
+    "现在需要它在这个语境里**该写的汉字**。"
+    "如果这个词本来就是假名、没有汉字写法（例如 おしゃべり），把 kanji 留空。"
+    '只输出 JSON：{"kanji":"","why":"一句话"}'
+)
+
+
+def kanji_form(kana, sentence, note, client):
+    """把假名读成汉字写法。拿不到就返回空串（不硬猜）。"""
+    user = json.dumps({"读音（假名）": kana, "整句": sentence,
+                       "用户说这句应该是什么意思": note or ""}, ensure_ascii=False)
+    try:
+        data = client.json_chat(KANJI_SYSTEM, user, max_tokens=200)
+    except Exception:                                    # noqa: BLE001
+        return ""
+    word = (data.get("kanji") or "").strip()
+    if not word or _KANA_ONLY.match(word) or " " in word or len(word) > 6:
+        return ""
+    return word
 
 
 def note_keywords(note, size=2):

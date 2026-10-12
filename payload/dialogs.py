@@ -987,3 +987,68 @@ class JaIssueDialog(tk.Toplevel):
     def accept(self):
         self.result = {"note": self.note.get()}
         self.destroy()
+
+
+class JaFixConfirmDialog(tk.Toplevel):
+    """自动推出来的改法、但机器自己不确定时的确认框。
+
+    使用者的原则很简单：**他说了算**。软件可以说"我不确定"，
+    但不能替他否决 —— 所以这里把机器给的改法、试翻结果、以及"为什么我不确定"
+    全都摆出来，由他决定用不用。
+    """
+
+    def __init__(self, parent, cue, fix, trial_zh, reason):
+        super().__init__(parent)
+        self.title("这个改法要不要用？")
+        self.geometry("760x600")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.result = None
+        body = ttk.Frame(self, padding=20)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="软件推出了一个改法，但它自己不太确定",
+                  font=(FONT_FAMILY, 15, "bold")).pack(anchor="w")
+        ttk.Label(body, text="你懂中文就够了 —— 看一眼下面的两句译文，用不用你说了算。",
+                  wraplength=700, style="Muted.TLabel",
+                  justify="left").pack(anchor="w", pady=(6, 14))
+
+        def block(title, text, height=2, bg="#f6f8fa"):
+            ttk.Label(body, text=title).pack(anchor="w", pady=(10, 2))
+            box = ScrolledText(body, height=height, wrap="word", font=(FONT_FAMILY, 11),
+                               relief="solid", borderwidth=1, background=bg)
+            box.insert("1.0", text or "（空）")
+            box.configure(state="disabled")
+            box.pack(fill="x")
+            return box
+
+        block(f"这一条（第 {cue.get('id')} 条）现在的译文", cue.get("zh") or "（还没有中文）", 3)
+        block("按机器给的改法，试翻出来是这样", trial_zh or "（没翻出来）", 3, "#eef7ee")
+        block("日文的改法（你看不懂也没关系，上面那句中文才是判断依据）",
+              f"原句：{cue.get('source') or ''}", 1)
+        changed = ScrolledText(body, height=1, wrap="word", font=(FONT_FAMILY, 11),
+                               relief="solid", borderwidth=1, background="#f6f8fa")
+        changed.insert("1.0", f"改后：{fix.get('fixed') or ''}")
+        changed.configure(state="disabled")
+        changed.pack(fill="x")
+
+        ttk.Label(body, text=f"它自己不确定的原因：{reason}", wraplength=700,
+                  foreground="#8a4b00", justify="left").pack(anchor="w", pady=(14, 0))
+        ttk.Label(body, text="用的话就写进「日文纠正表」，以后所有视频都按这个改；"
+                             "不确定就先记下来，留给懂日语的人。",
+                  wraplength=700, style="Muted.TLabel", justify="left").pack(anchor="w", pady=(6, 0))
+
+        footer = ttk.Frame(body)
+        footer.pack(side="bottom", fill="x")
+        ttk.Button(footer, text="取消", command=self.destroy).pack(side="right")
+        ttk.Button(footer, text="先记下来", command=self.record).pack(side="right", padx=8)
+        ttk.Button(footer, text="就按这个改", command=self.apply, style="Accent.TButton").pack(side="right")
+        self.bind("<Escape>", lambda event: self.destroy())
+        self.grab_set()
+
+    def apply(self):
+        self.result = "apply"
+        self.destroy()
+
+    def record(self):
+        self.result = "record"
+        self.destroy()
