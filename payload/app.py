@@ -22,6 +22,8 @@ from core import (APP_VERSION, DEFAULT_MODEL, GLOSSARY_LIMIT, Cue, DeepSeekClien
                   store_imported_project, timestamp, worker, write_blocked_hint,
                   CHINESE_ONLY_KEYS, EXPORT_ITEMS, EXPORT_LABELS, SOURCE_ONLY_KEYS, ZH_KEYS,
                   BUILTIN_MODEL_REPOS, local_model_status, model_download_mb,
+                  MODEL_ORDER, MODEL_PROFILES, hardware_profile, model_pros_cons, model_table,
+                  profile_text, recommend_model,
                   default_export_keys, default_export_selection, export_choices, should_alert)
 from diagnostics import PHASES, Diagnostics, error_info
 from dialogs import (AddCueDialog, AssStyleDialog, DurationDialog, ExportDialog, JaFixConfirmDialog,
@@ -186,6 +188,11 @@ class Application(tk.Tk):
         self.tidy_var = tk.BooleanVar(value=bool(self.settings.get("tidy_axis", True)))
         self.separate_var = tk.BooleanVar(value=bool(self.settings.get("separate_vocals", False)))
         self.model_hint_var = tk.StringVar()
+        # 「怎么选模型」那一块用：检测结果、推荐、当前选中模型的长短处
+        self.hardware_var = tk.StringVar()
+        self.recommend_var = tk.StringVar()
+        self.selected_model_var = tk.StringVar()
+        self.recommended_model = ""
         self.force_var = tk.BooleanVar(value=False)
         self.status_var = tk.StringVar(value="选择视频，或打开已有项目 / SRT 直接校对。")
         self.summary_var = tk.StringVar(value="尚未载入字幕")
@@ -476,12 +483,15 @@ class Application(tk.Tk):
         self.busy_controls.append(force)
         ttk.Separator(settings).grid(row=8, column=0, columnspan=3, sticky="ew", pady=14)
         ttk.Label(settings, text="本地语音识别", font=(FONT_FAMILY, 15, "bold")).grid(row=9, column=0, columnspan=3, sticky="w", pady=(2, 14))
-        for r, label, var, values in [(10, "识别模型", self.asr_var, ["tiny", "small", "medium", "large-v3", "turbo", "base"]),
+        for r, label, var, values in [(10, "识别模型", self.asr_var, list(MODEL_ORDER)),
                                        (11, "处理设备", self.device_var, ["CPU（直接使用）", "NVIDIA GPU（4 GB 省显存）"])]:
             ttk.Label(settings, text=label).grid(row=r, column=0, sticky="w", pady=6)
             c = ttk.Combobox(settings, textvariable=var, values=values, state="readonly", width=28)
             c.grid(row=r, column=1, sticky="w", pady=6)
             self.busy_controls.append(c)
+            if r == 10:
+                self.asr_combo = c
+                c.bind("<<ComboboxSelected>>", lambda _e: self.refresh_model_hint())
         ttk.Label(settings, textvariable=self.model_hint_var, style="Muted.TLabel").grid(row=10, column=2, sticky="w", padx=10)
         ttk.Label(settings, text="CPU 可直接使用。显卡首次下载约 570 MB 组件；下载可继续，显卡不可用时自动使用 CPU。", style="Muted.TLabel").grid(row=12, column=1, columnspan=2, sticky="w", pady=6)
         ttk.Label(settings, text="本地模型文件夹").grid(row=13, column=0, sticky="w", pady=6)
@@ -522,6 +532,31 @@ class Application(tk.Tk):
         ttk.Label(save_row, textvariable=self.glossary_hint_var, style="Muted.TLabel").pack(side="left", padx=12)
         ttk.Label(settings, text="这一页的改动也会在开始任务、关闭软件时自动保存，不点按钮也不会丢。"
                   "术语表只影响翻译，不改变语音识别结果。", style="Muted.TLabel").grid(row=27, column=0, columnspan=3, sticky="w")
+
+        # ---- 怎么选模型：自动检测这台机器 → 给推荐 → 长短处摆出来（选择权仍在使用者）----
+        ttk.Separator(settings).grid(row=28, column=0, columnspan=3, sticky="ew", pady=14)
+        ttk.Label(settings, text="怎么选识别模型", font=(FONT_FAMILY, 15, "bold")).grid(
+            row=29, column=0, columnspan=3, sticky="w", pady=(2, 10))
+        ttk.Label(settings, text="这台机器", style="Muted.TLabel").grid(row=30, column=0, sticky="nw", pady=6)
+        ttk.Label(settings, textvariable=self.hardware_var).grid(row=30, column=1, columnspan=2, sticky="w", pady=6)
+        ttk.Label(settings, text="推荐", style="Muted.TLabel").grid(row=31, column=0, sticky="nw", pady=6)
+        ttk.Label(settings, textvariable=self.recommend_var, wraplength=640,
+                  justify="left").grid(row=31, column=1, columnspan=2, sticky="w", pady=6)
+        hw_row = ttk.Frame(settings)
+        hw_row.grid(row=32, column=1, columnspan=2, sticky="w", pady=(2, 8))
+        self.button(hw_row, "用推荐的模型", self.apply_recommended_model, busy=False, side="left")
+        self.button(hw_row, "重新检测", self.refresh_hardware_hint, busy=False, side="left", padx=8)
+        ttk.Label(hw_row, text="选哪个都行，这里只是给依据", style="Muted.TLabel").pack(side="left", padx=10)
+        ttk.Label(settings, text="各模型的长短处").grid(row=33, column=0, sticky="nw", pady=(6, 2))
+        table = tk.Text(settings, height=7, width=96, font=("Consolas", 9), relief="solid",
+                        borderwidth=1, wrap="none")
+        table.insert("1.0", model_table())
+        table.configure(state="disabled")
+        table.grid(row=33, column=1, columnspan=2, sticky="w", pady=(6, 2))
+        ttk.Label(settings, textvariable=self.selected_model_var, style="Muted.TLabel").grid(
+            row=34, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        self.refresh_hardware_hint()
+
         gpu_btn = ttk.Button(settings, text="启用显卡加速", command=self.start_gpu_setup, style="Accent.TButton")
         gpu_btn.grid(row=11, column=2, padx=10, pady=6)
         self.busy_controls.append(gpu_btn)
@@ -1249,17 +1284,47 @@ class Application(tk.Tk):
             return False
 
     def refresh_model_hint(self):
-        """把本机已有的模型标出来。
+        """把本机已有的模型标出来，并顺手把**当前选中模型的长短处**写在旁边。
 
         下拉里六个模型长得一样，选到没下的那个会先下几百 MB 到 3 GB，
-        使用者有权在下拉旁边就看见这件事。
+        使用者有权在下拉旁边就看见"这个多大、多快、多准、要不要先下"。
         """
         ready = [name for name in BUILTIN_MODEL_REPOS
                  if local_model_status(name, str(USER_DIR / "models"))]
+        chosen = self.asr_var.get().strip()
+        pros = model_pros_cons(chosen) if chosen in MODEL_PROFILES else ""
         if ready:
-            self.model_hint_var.set("本机已有：" + "、".join(ready) + "；选其他的需要先下载")
+            line = "本机已有：" + "、".join(ready) + "；选其他的需要先下载"
         else:
-            self.model_hint_var.set("本机还没有模型，首次使用会自动下载")
+            line = "本机还没有模型，首次使用会自动下载"
+        if chosen in MODEL_PROFILES:
+            info = MODEL_PROFILES[chosen]
+            state = "已下载" if chosen in ready else f"未下载（约 {info['mb']} MB）"
+            # 下拉旁边只放"一眼能比"的：下载状态 + 速度 + 质量；完整说明在下面的对照表
+            line = (f"{chosen}：{state}　·　速度 {'★' * info['speed']}{'☆' * (5 - info['speed'])}"
+                    f"　质量 {'★' * info['quality']}{'☆' * (5 - info['quality'])}")
+        self.model_hint_var.set(line)
+        if hasattr(self, "selected_model_var"):
+            self.selected_model_var.set(f"当前选择：{model_pros_cons(chosen)}" if pros else "")
+
+    def refresh_hardware_hint(self):
+        """自动检测这台机器，并给出推荐（只给依据，选哪个由使用者决定）。"""
+        profile = hardware_profile()
+        self.hardware_var.set(profile_text(profile))
+        model, reason = recommend_model(profile)
+        self.recommended_model = model
+        self.recommend_var.set(f"{model}　——　{reason}")
+        self.refresh_model_hint()
+
+    def apply_recommended_model(self):
+        """把识别模型切到推荐的那个（使用者点的，不是自动改的）。"""
+        model = getattr(self, "recommended_model", "") or recommend_model(hardware_profile())[0]
+        self.asr_var.set(model)
+        self.refresh_model_hint()
+        self.log(f"识别模型已切换为 {model}（按本机配置推荐）。")
+        messagebox.showinfo("已切换", f"识别模型已设成「{model}」。\n\n"
+                                      f"{model_pros_cons(model)}\n\n"
+                                      "不改也没关系 —— 点「保存设置」或直接开始任务即可。")
 
     def confirm_model_download(self):
         """选到本机还没有的模型时，先把要下多少、能不能中断说清楚再动手。

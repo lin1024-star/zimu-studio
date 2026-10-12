@@ -1029,6 +1029,130 @@ BUILTIN_MODEL_REPOS = {
 # 大约多少 MB。只用来在下载前把要等多久说清楚，不做校验。
 MODEL_DOWNLOAD_MB = {"tiny": 75, "base": 145, "small": 484,
                      "medium": 1530, "large-v3": 3090, "turbo": 1620}
+
+# ---------------------------------------------------------------------------
+# 怎么选识别模型：先检测这台机器，再按配置推荐，并把每个模型的长短处摆出来
+#
+# 依据（2026-10-13 实测：6 分 22 秒朗读剧，同一台机器、同一份术语表）：
+#   · 真正有分歧的 48 处里，turbo 赢 10、large-v3 赢 8，另外 30 处
+#     12 次重听（3 个模型 × 4 组解码参数）票数打平 —— **质量基本打平**；
+#   · 但 turbo 整轮快 1.9 倍（识别部分快 2.5~3 倍）；
+#   · large-v3 的长处是汉字写法更规范（時 / 本当に / 分かる 这类写汉字而非假名），
+#     短处是慢，显存小的机器上更吃紧（4 GB 时只能单模型跑）。
+# 所以：**按显存分档给推荐，但选择权留给使用者** —— 软件只摆依据，不替他决定。
+# ---------------------------------------------------------------------------
+MODEL_PROFILES = {
+    "tiny":     {"mb": 75,   "speed": 5, "quality": 1, "note": "只适合先看看效果，错得多"},
+    "base":     {"mb": 145,  "speed": 5, "quality": 2, "note": "比 tiny 好一点，仍不建议正式用"},
+    "small":    {"mb": 484,  "speed": 4, "quality": 2, "note": "配置很低时用；实测会漏字、截断"},
+    "medium":   {"mb": 1530, "speed": 2, "quality": 3, "note": "内置但没实测过；一般不如 turbo"},
+    "large-v3": {"mb": 3090, "speed": 2, "quality": 4, "note": "汉字写法更规范；慢 2-3 倍，显存小吃紧"},
+    "turbo":    {"mb": 1620, "speed": 4, "quality": 4, "note": "实测与 large-v3 质量打平，但快 2-3 倍"},
+}
+MODEL_ORDER = ("turbo", "large-v3", "small", "medium", "base", "tiny")
+
+
+def _stars(value):
+    value = max(0, min(5, int(value)))
+    return "★" * value + "☆" * (5 - value)
+
+
+def model_pros_cons(name):
+    """一个模型的长短处（一句话），认不出来就返回空串。"""
+    info = MODEL_PROFILES.get(name)
+    if not info:
+        return ""
+    return (f"大小 {info['mb']} MB　速度 {_stars(info['speed'])}　质量 {_stars(info['quality'])}"
+            f"　—— {info['note']}")
+
+
+def model_table():
+    """模型对照表：每个模型的大小 / 速度 / 质量 / 适合什么时候用。
+
+    用显示宽度对齐（汉字占两格），否则表头和数据会错位。
+    """
+    rows = [_pad("模型", 8) + _pad("大小", 7, "right") + "   "
+            + _pad("速度", 12) + _pad("质量", 12) + "适合什么时候用"]
+    for name in MODEL_ORDER:
+        info = MODEL_PROFILES[name]
+        rows.append(_pad(name, 8) + _pad(f"{info['mb']}MB", 7, "right") + "   "
+                    + _pad(_stars(info["speed"]), 12) + _pad(_stars(info["quality"]), 12)
+                    + info["note"])
+    return "\n".join(rows)
+
+
+def _display_width(text):
+    """字符串在等宽字体里占几个字符宽（汉字/全角算两个）。"""
+    import unicodedata
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def _pad(text, width, align="left"):
+    """按**显示宽度**补齐（不是按字符个数）——中文表头才能和数据对齐。"""
+    spaces = " " * max(0, width - _display_width(text))
+    return text + spaces if align == "left" else spaces + text
+
+
+def hardware_profile():
+    """检测这台机器：显卡名、显存、内存。
+
+    **永远不抛异常** —— 检测不出来就留空，让上层显示"没检测到"，绝不能因此拦住建任务。
+    """
+    profile = {"gpu": "", "vram_gb": 0.0, "ram_gb": 0.0}
+    try:
+        import ctypes
+
+        class _MemoryStatusEx(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+        status = _MemoryStatusEx()
+        status.dwLength = ctypes.sizeof(_MemoryStatusEx)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            profile["ram_gb"] = round(status.ullTotalPhys / 1024 ** 3, 1)
+    except Exception:                                        # noqa: BLE001
+        pass
+    try:
+        from gpu_runtime import driver_info
+        info = driver_info()
+        profile["gpu"] = str(info.get("name") or "").strip()
+        profile["vram_gb"] = round(float(info.get("memory") or 0) / 1024 ** 3, 1)
+    except Exception:                                        # noqa: BLE001
+        pass
+    return profile
+
+
+def profile_text(profile):
+    """把检测结果写成人话。"""
+    gpu = (profile or {}).get("gpu") or ""
+    vram = float((profile or {}).get("vram_gb") or 0)
+    ram = float((profile or {}).get("ram_gb") or 0)
+    parts = []
+    if gpu:
+        parts.append(f"{gpu}")
+        parts.append(f"显存 {vram:.1f} GB" if vram else "显存未知")
+    else:
+        parts.append("没检测到可用的 NVIDIA 显卡")
+    if ram:
+        parts.append(f"内存 {ram:.1f} GB")
+    return "　·　".join(parts)
+
+
+def recommend_model(profile):
+    """按配置推荐模型，返回 (模型名, 一句话理由)。选择权仍然在使用者手上。"""
+    vram = float((profile or {}).get("vram_gb") or 0)
+    if vram >= 8:
+        return "large-v3", f"显存 {vram:.1f} GB：large-v3 跑得动，质量优先，速度也能接受。"
+    if vram >= 5:
+        return "large-v3", f"显存 {vram:.1f} GB：够跑 large-v3，质量优先。"
+    if vram >= 3:
+        return "turbo", f"显存 {vram:.1f} GB：实测 turbo 与 large-v3 质量打平，但快 2-3 倍。"
+    if vram > 0:
+        return "turbo", f"显存偏小（{vram:.1f} GB）：用 turbo 更稳，large-v3 容易吃紧。"
+    return "small", "没检测到可用的 NVIDIA 显卡：用 small 走 CPU，能跑得动。"
 HF_OFFICIAL = "https://huggingface.co"
 HF_MIRROR = "https://hf-mirror.com"
 MODEL_ALLOW_PATTERNS = ("config.json", "preprocessor_config.json", "model.bin",
