@@ -23,9 +23,10 @@ from core import (APP_VERSION, DEFAULT_MODEL, GLOSSARY_LIMIT, Cue, UserError, at
                   BUILTIN_MODEL_REPOS, local_model_status, model_download_mb,
                   default_export_keys, default_export_selection, export_choices, should_alert)
 from diagnostics import PHASES, Diagnostics, error_info
-from dialogs import (AddCueDialog, AssStyleDialog, DurationDialog, ExportDialog, OffsetDialog,
-                     SrtImportDialog, TimelineQcDialog)
+from dialogs import (AddCueDialog, AssStyleDialog, DurationDialog, ExportDialog, JaIssueDialog,
+                     OffsetDialog, SrtImportDialog, TimelineQcDialog)
 from paths import data_root
+import ja_fix
 import timeline_qc
 
 APP_DIR = Path(__file__).resolve().parent
@@ -406,6 +407,7 @@ class Application(tk.Tk):
             self.busy_controls.append(entry)
         ttk.Label(row, text="修改保留译文；清空中文可补译此条", style="Muted.TLabel").pack(side="left", padx=8)
         self.button(row, "保存此条修改", self.save_current, side="right")
+        self.button(row, "这句识别错了", self.report_issue, side="right", padx=8, busy=False)
 
         self.logs = ScrolledText(main, height=2, wrap="word", font=(FONT_FAMILY, 9), bg="#e6edf3", fg=MUTED, relief="flat", state="disabled")
         self.logs.grid(row=9, column=0, sticky="ew", pady=(8, 0))
@@ -782,6 +784,51 @@ class Application(tk.Tk):
             self.status_var.set("新增字幕已保存并按时间插入。其他字幕和译文已保留。")
         except (UserError, OSError) as exc:
             messagebox.showerror("无法添加字幕", save_error_text(exc))
+
+    def report_issue(self):
+        """「这句识别错了」：把这条抄下来，攒着交给懂日语的人。
+
+        使用者判断不了「正确的日文该怎么写」，但一眼看得出中文不对
+        （"喜欢吃饭的警察"）。所以这里只让他用中文写一句哪里不对，
+        日文原文由程序自己抄进文件 —— 他一个字日文都不用打。
+        """
+        row = next((r for r in (self.project or {}).get("cues", []) if r["id"] == self.selected_id), None)
+        if row is None:
+            messagebox.showinfo("先选一条", "在上面的列表里点一下不对劲的那条字幕，再来标错。")
+            return
+        name = (self.project or {}).get("name") or Path(self.project_path or "").stem
+        dialog = JaIssueDialog(self, row, name, saved_count=ja_fix.count_issues())
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+        self.save_issue(row, name, dialog.result.get("note", ""))
+
+    def save_issue(self, row, name, note):
+        """真正写文件那一步（和弹窗分开，方便单独测）。返回有没有记下。"""
+        path, block, status = ja_fix.record_issue(name, row, note)
+        if status == "duplicate":
+            messagebox.showinfo("已经记过了", f"这一条之前就记过，这次没有重复写。\n\n文件：{path}")
+            return False
+        if status != "new":
+            messagebox.showwarning("没写进去", f"没能写进文件（可能被占用、或者没有写入权限）。\n\n文件：{path}")
+            return False
+        copied = ""
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(block)
+            copied = "，并复制到了剪贴板"
+        except tk.TclError:
+            pass
+        total = ja_fix.count_issues()
+        self.log(f"已记下第 {row.get('id')} 条「识别可能有误」（待处理共 {total} 条）：{path}")
+        messagebox.showinfo(
+            "记下来了",
+            f"第 {row.get('id')} 条已经记下{copied}。\n\n"
+            f"文件在：{path}\n目前一共记了 {total} 条。\n\n"
+            "怎么处理：把里面「日文原文」那一行拿给懂日语的人看一眼，\n"
+            "问出正确写法后，填进同目录的「日文纠正表.txt」，写成「错的 = 对的」。\n"
+            "填完以后，同样的错在以后的项目里就不会再出现了。")
+        return True
 
     def set_duration(self):
         if self.busy:

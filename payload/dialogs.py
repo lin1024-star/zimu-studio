@@ -918,3 +918,71 @@ class AssStyleDialog(tk.Toplevel):
             return
         self.result = {"source": self.source.get(), "edits": self.edits, "font_sizes": sizes}
         self.destroy()
+
+
+class JaIssueDialog(tk.Toplevel):
+    """「这句识别错了」：把看不过去的一条记下来，攒着交给懂日语的人。
+
+    给不懂日语的使用者用：他判断不了「正确的日文该怎么写」，
+    但一眼就能看出中文不对（"喜欢吃饭的警察"）。
+    所以这里**只让他用中文写一句哪里不对**，日文原文由程序自己抄进去，
+    他一个字日文都不用打。
+    """
+
+    def __init__(self, parent, cue, project_name, saved_count=0):
+        super().__init__(parent)
+        self.title("这句识别错了")
+        self.geometry("700x560")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.result = None
+        self.note = tk.StringVar()
+        body = ttk.Frame(self, padding=20)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="这一句哪里不对劲？", font=(FONT_FAMILY, 15, "bold")).pack(anchor="w")
+        ttk.Label(body, text="不懂日语也没关系 —— 用中文说一句就行，"
+                             "比如「这句应该是贪污，不是吃饭」。\n"
+                             "程序会把这句的日文原文一起记下来，你不用自己打日文。",
+                  wraplength=640, style="Muted.TLabel", justify="left").pack(anchor="w", pady=(6, 14))
+        ttk.Label(body, text=f"第 {cue.get('id')} 条　"
+                             f"{timestamp(cue.get('start'))} → {timestamp(cue.get('end'))}　"
+                             f"（{project_name or '未命名项目'}）").pack(anchor="w")
+
+        ttk.Label(body, text="现在的译文（就是你觉得不对的那句）").pack(anchor="w", pady=(12, 2))
+        zh = ScrolledText(body, height=3, wrap="word", font=(FONT_FAMILY, 11),
+                          relief="solid", borderwidth=1, background="#f6f8fa")
+        zh.insert("1.0", cue.get("zh") or "（这条还没有中文）")
+        zh.configure(state="disabled")
+        zh.pack(fill="x")
+
+        ttk.Label(body, text="日文原文（你不用看，程序会一起记下来）").pack(anchor="w", pady=(12, 2))
+        ja = ScrolledText(body, height=2, wrap="word", font=(FONT_FAMILY, 11),
+                          relief="solid", borderwidth=1, background="#f6f8fa")
+        ja.insert("1.0", cue.get("source") or "")
+        ja.configure(state="disabled")
+        ja.pack(fill="x")
+
+        ttk.Label(body, text="你觉得哪里不对（可以不写）").pack(anchor="w", pady=(12, 2))
+        entry = ttk.Entry(body, textvariable=self.note)
+        entry.pack(fill="x")
+
+        hint = ("记下来不会自动改任何东西。攒几条之后，把「日文原文」拿给懂日语的人核对，"
+                "问出正确写法填进「日文纠正表.txt」，以后同样的错就不会再出现。")
+        if saved_count:
+            hint += f"　目前已经记了 {saved_count} 条。"
+        ttk.Label(body, text=hint, wraplength=640, style="Muted.TLabel",
+                  justify="left").pack(anchor="w", pady=(14, 0))
+
+        footer = ttk.Frame(body)
+        footer.pack(side="bottom", fill="x")
+        ttk.Button(footer, text="取消", command=self.destroy).pack(side="right")
+        self.save_button = ttk.Button(footer, text="记下来", command=self.accept, style="Accent.TButton")
+        self.save_button.pack(side="right", padx=8)
+        self.bind("<Return>", lambda event: self.accept())
+        self.bind("<Escape>", lambda event: self.destroy())
+        entry.focus_set()
+        self.grab_set()
+
+    def accept(self):
+        self.result = {"note": self.note.get()}
+        self.destroy()

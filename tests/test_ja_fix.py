@@ -7,6 +7,7 @@
   3. 表丢了、写坏了都不能拦着识别
 """
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -354,6 +355,83 @@ class LiveTranslatorTest(unittest.TestCase):
                 translator._ja_tables = Boom()
                 sentence = {"id": 1, "ja": "お食大好き", "start": 0, "end": 1}
                 self.assertIs(translator._fix_ja(sentence), sentence)
+
+
+class IssueRecordTest(unittest.TestCase):
+    """「这句识别错了」：把看不顺眼的一条记下来，攒着交给懂日语的人。
+
+    使用者不懂日语，填不出"正确的日文"，所以这个功能的关键是
+    **程序替他把日文原文抄进去**，他只要写中文备注。
+    """
+
+    def cue(self, **over):
+        values = {"id": 1070, "start": 2973.93, "end": 2975.39,
+                  "source": "お食警官だから", "zh": "因为是食警官嘛"}
+        values.update(over)
+        return values
+
+    def test_record_writes_a_readable_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path, block, status = ja_fix.record_issue("SURGECITY", self.cue(), "应该是贪污", root=tmp)
+            self.assertEqual(status, "new")
+            text = Path(path).read_text(encoding="utf-8")
+        self.assertIn("日文原文：お食警官だから", text)
+        self.assertIn("现在的译文：因为是食警官嘛", text)
+        self.assertIn("他觉得不对的地方：应该是贪污", text)
+        self.assertIn("第 1070 条", text)
+        self.assertIn("49:33.93", text)              # 2973.93 秒 → 49 分 33.93 秒
+        self.assertIn("SURGECITY", text)
+
+    def test_over_an_hour_gets_the_hour_field(self):
+        block = ja_fix.format_issue("x", self.cue(start=3900.0, end=3901.5), when="2026-10-12 23:00")
+        self.assertIn("1:05:00.00", block)
+
+    def test_the_header_is_written_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ja_fix.record_issue("p", self.cue(), root=tmp)
+            ja_fix.record_issue("p", self.cue(id=2, source="別の行"), root=tmp)
+            text = Path(ja_fix.issue_path(tmp)).read_text(encoding="utf-8")
+            self.assertEqual(text.count("这里记的是"), 1)
+            self.assertEqual(ja_fix.count_issues(tmp), 2)   # 开头的说明不算一条
+
+    def test_same_line_is_not_recorded_twice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ja_fix.record_issue("p", self.cue(), "备注", root=tmp)
+            _path, _block, status = ja_fix.record_issue("p", self.cue(), "备注", root=tmp)
+            self.assertEqual(status, "duplicate")
+            self.assertEqual(ja_fix.count_issues(tmp), 1)
+
+    def test_a_different_note_is_a_new_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ja_fix.record_issue("p", self.cue(), "第一个想法", root=tmp)
+            _path, _block, status = ja_fix.record_issue("p", self.cue(), "又想到一点", root=tmp)
+            self.assertEqual(status, "new")
+            self.assertEqual(ja_fix.count_issues(tmp), 2)
+
+    def test_same_line_in_another_project_is_a_new_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ja_fix.record_issue("第一期", self.cue(), root=tmp)
+            _path, _block, status = ja_fix.record_issue("第二期", self.cue(), root=tmp)
+            self.assertEqual(status, "new")
+
+    def test_a_missing_folder_is_an_error_not_a_new_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "还没有这个目录"
+            _path, _block, status = ja_fix.record_issue("p", self.cue(), root=str(missing))
+            self.assertEqual(status, "error")
+            self.assertFalse(missing.exists())
+
+    def test_counting_an_absent_file_is_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(ja_fix.count_issues(tmp), 0)
+
+    def test_the_source_is_copied_so_the_user_never_types_japanese(self):
+        """这条是这个功能的灵魂：日文由程序抄，使用者只写中文。"""
+        block = ja_fix.format_issue("p", self.cue(), note="这里应该是贪污", when="2026-10-12 23:00")
+        japanese = block.split("日文原文：")[1].splitlines()[0]
+        self.assertEqual(japanese, "お食警官だから")
+        note = block.split("他觉得不对的地方：")[1].splitlines()[0]
+        self.assertFalse(re.search(r"[\u3040-\u30ff]", note), "备注里不该有假名（使用者不懂日语）")
 
 
 if __name__ == "__main__":

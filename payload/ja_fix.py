@@ -35,6 +35,7 @@
 · 每一条改动都记账，供日志直接展示（使用者不懂日语，日志是他唯一的检查手段）。
 """
 import re
+from datetime import datetime
 from pathlib import Path
 
 from core import Cue
@@ -222,3 +223,113 @@ class TableCache:
             self._stamp = stamp
             self._table = load_table(self.root)
         return self._table
+
+
+# ---------------------------------------------------------------------------
+# 「这句识别错了」——把看不过去的一条记下来，攒着交给懂日语的人
+#
+# 为什么要这个：使用者**不懂日语**，判断不了"正确的日文该怎么写"，
+# 所以纠正表他自己填不了。他能做的是：看出中文翻译不对劲（"喜欢吃饭的警察"）。
+# 于是给他一个按钮：选中那一条 → 程序把这句的**日文原文**和现有译文抄进一个文件
+# → 攒几条问懂日语的人（朋友、字幕组、翻译都行）→ 把正确写法填进纠正表。
+# 这样他一个字日文都不用打，而且**不依赖任何特定的人**。
+# ---------------------------------------------------------------------------
+ISSUE_NAME = "日文纠错_待处理.txt"
+_ISSUE_RULE = "─" * 64
+
+ISSUE_HEAD = """# 这里记的是「识别或翻译看着不对劲」的字幕。
+#
+# 怎么来的：字幕工坊里选中不对的那一条 → 点「这句识别错了」
+# 怎么处理：把下面「日文原文」那一行拿给懂日语的人看一眼
+#           （朋友、字幕组、翻译都行），问出正确的写法，
+#           然后填进同一个目录里的「日文纠正表.txt」，写成这样：
+#
+#               识别错的 = 改对的
+#
+#           填完以后，同样的错在以后的项目里就不会再出现了。
+#
+# 一条一段，用横线隔开。日文原文是程序抄好的，不用自己打日文。
+"""
+
+
+def issue_path(root=None):
+    """待处理文件的位置。root 只给测试用，不传就是数据根目录。"""
+    return Path(root) / ISSUE_NAME if root is not None else data_root() / ISSUE_NAME
+
+
+def _clock(seconds):
+    """秒 → 人看得懂的时间（不足一小时就不显示小时）。"""
+    total = float(seconds or 0)
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{int(hours)}:{int(minutes):02d}:{secs:05.2f}"
+    return f"{int(minutes)}:{secs:05.2f}"
+
+
+def format_issue(project_name, cue, note="", when=None):
+    """把一条排成好读的几行。使用者要把它发出去，所以写人话、不要 JSON。"""
+    stamp = when or datetime.now().strftime("%Y-%m-%d %H:%M")
+    rows = [_ISSUE_RULE,
+            f"记下时间：{stamp}",
+            f"项目：{project_name or '（没记项目名）'}",
+            f"位置：第 {cue.get('id')} 条　{_clock(cue.get('start'))} → {_clock(cue.get('end'))}",
+            f"日文原文：{cue.get('source') or ''}",
+            f"现在的译文：{cue.get('zh') or '（这条还没有中文）'}"]
+    if (note or "").strip():
+        rows.append(f"他觉得不对的地方：{note.strip()}")
+    return "\r\n".join(rows) + "\r\n"
+
+
+def _issue_key(block):
+    """一块记录的实质内容（忽略「记下时间」、横线、以及开头的说明），用来判断有没有记过。
+
+    说明行要一起忽略：不然文件开头那段「# 这里记的是…」会被当成一条记录数进去。
+    """
+    keep = []
+    for line in block.splitlines():
+        text = line.strip()
+        if not text or text.startswith("#") or text.startswith("记下时间："):
+            continue
+        if set(text) <= {"─"}:
+            continue
+        keep.append(text)
+    return "\n".join(keep)
+
+
+def record_issue(project_name, cue, note="", root=None, when=None):
+    """记一条。返回 (文件路径, 这次的文本, 结果)。
+
+    结果是 "new"（记下了）/ "duplicate"（这条之前记过，不重复写）/ "error"（写不进去）。
+    """
+    path = issue_path(root)
+    block = format_issue(project_name, cue, note, when)
+    key = _issue_key(block)
+    try:
+        old = path.read_text("utf-8") if path.is_file() else ""
+    except (OSError, UnicodeError):
+        old = ""
+    for existing in old.split(_ISSUE_RULE):
+        if existing.strip() and _issue_key(existing) == key:
+            return path, block, "duplicate"
+    if not path.parent.is_dir():
+        return path, block, "error"
+    try:
+        with path.open("a", encoding="utf-8", newline="") as handle:
+            if not old:
+                handle.write(ISSUE_HEAD)
+            handle.write(block)
+    except OSError:
+        return path, block, "error"
+    return path, block, "new"
+
+
+def count_issues(root=None):
+    """待处理文件里已经记了几条。"""
+    path = issue_path(root)
+    try:
+        text = path.read_text("utf-8") if path.is_file() else ""
+    except (OSError, UnicodeError):
+        return 0
+    return sum(1 for part in text.split(_ISSUE_RULE) if _issue_key(part))
+
