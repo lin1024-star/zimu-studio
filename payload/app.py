@@ -445,16 +445,6 @@ class Application(tk.Tk):
         self.logs = ScrolledText(main, height=3, wrap="word", font=(FONT_FAMILY, 9), bg="#e6edf3", fg=MUTED, relief="flat", state="disabled")
         self.logs.grid(row=10, column=0, sticky="ew", pady=(10, 0))
 
-    def toggle_more(self):
-        """「更多操作」展开 / 收起 —— 不常用的东西默认不占地方。"""
-        if self.more_frame.winfo_ismapped():
-            self.more_frame.grid_remove()
-            self.more_button.configure(text="更多操作 ▾")
-        else:
-            self.more_frame.grid()
-            self.more_button.configure(text="收起 ▴")
-
-
         settings.columnconfigure(1, weight=1)
         ttk.Label(settings, text="DeepSeek 翻译", font=(FONT_FAMILY, 15, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 15))
         ttk.Label(settings, text="API 密钥").grid(row=1, column=0, sticky="w", pady=6, padx=(0, 18))
@@ -542,6 +532,25 @@ class Application(tk.Tk):
         text.pack(fill="both", expand=True)
         text.insert("1.0", HELP)
         text.configure(state="disabled")
+
+    def toggle_more(self):
+        """「更多操作」展开 / 收起 —— 不常用的东西默认不占地方。
+
+        ⚠️ 这个方法必须放在 build_ui **之外**。
+        之前它被插在 build_ui 中间，把后面半页代码（设置页 / 帮助页 / 诊断页）
+        全变成了它的方法体 —— 那几页根本没建出来，一点按钮就 NameError。
+        （使用者的诊断包直接指出了：app.py:458 toggle_more，NameError）
+
+        用记状态的 self.more_open 而不是 winfo_ismapped()：
+        后者在窗口没显示时永远是假，展开/收起会失灵，而且没法自动测。
+        """
+        self.more_open = not getattr(self, "more_open", False)
+        if self.more_open:
+            self.more_frame.grid()
+            self.more_button.configure(text="收起 ▴")
+        else:
+            self.more_frame.grid_remove()
+            self.more_button.configure(text="更多操作 ▾")
 
     def open_easy_guide(self):
         import webbrowser
