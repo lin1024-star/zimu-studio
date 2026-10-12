@@ -378,6 +378,7 @@ class LiveApp:
                         f"｜每步 {st['seconds']/st['steps']:.2f}s（预算 {DEFAULTS['step']}s）"
                         f"｜最慢 {st['worst']:.2f}s｜积压 {self.transcriber.backlog():.1f}s"
                         f"｜挡重复 {st['dups']}｜跳过 {st['skipped']}"
+                        f"｜纠正表命中 {ts.get('ja_fixed',0)}"
                         f"｜翻译 {ts.get('batches',0)} 批/{ts.get('lines',0)} 条"
                         f" 平均 {ts.get('seconds',0)/max(1,ts.get('batches',1)):.1f}s"
                         f"｜待翻 {self.translator.pending() if self.translator else 0}"

@@ -330,8 +330,34 @@ class Translator(threading.Thread):
         self.q = queue.Queue()
         self.stop_event = threading.Event()
         self.stats = {"batches": 0, "lines": 0, "dropped": 0, "seconds": 0.0, "errors": 0}
+        self._ja_tables = None
+        self.stats["ja_fixed"] = 0
+
+    def _fix_ja(self, sentence):
+        """按「日文纠正表」把听错的词改对，再送去翻译。
+
+        表和批量识别共用同一份（放数据根目录），改了表下一批立刻生效。
+        表不存在 / 读不了 → 原样返回，不影响出字幕。
+        """
+        text = sentence.get("ja", "")
+        try:
+            # 这行 import 必须在 if 外面：写在 if 里面的话，第二次调用会跳过它，
+            # ja_fix 就成了"局部变量未赋值"，下面一句直接抛 UnboundLocalError，
+            # 再被下面的兜底吞掉 —— 表现是「只有第一句生效，之后永远不生效」，
+            # 而且单元测试只发一句时正好测不出来（真踩过）。
+            import ja_fix
+            if self._ja_tables is None:
+                self._ja_tables = ja_fix.TableCache()
+            fixed, _hits = ja_fix.apply_text(text, self._ja_tables.get())
+        except Exception:  # noqa: BLE001 — 纠正表绝不能拦着出字幕
+            return sentence
+        if fixed == text:
+            return sentence
+        self.stats["ja_fixed"] += 1
+        return {**sentence, "ja": fixed}
 
     def submit(self, sentence):
+        sentence = self._fix_ja(sentence)
         while self.q.qsize() >= self.max_pending:
             try:
                 self.q.get_nowait()

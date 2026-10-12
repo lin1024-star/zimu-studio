@@ -1601,6 +1601,12 @@ def translate_project(path, project, key, model, glossary, stop, emit, force=Fal
         emit("log", "这是已完成的中文字幕，只校对和导出，不调用翻译 API。")
         return
     cues = [Cue(**r) for r in project["cues"]]
+    # 翻译之前先按「日文纠正表」把听错的词改对（老项目也走这里，不用重跑识别）。
+    # 只改日文原文：中文、时间轴、编号一个字都不动；表不存在就什么都不做。
+    import ja_fix
+    cues, fix_report = ja_fix.fix_cues(cues)
+    for line in ja_fix.report_lines(fix_report):
+        emit("log", line)
     profile = {"model": model, "glossary": glossary, "prompt_version": PROMPT_VERSION}
     previous = project.get("translation_profile")
     if force:
@@ -1903,6 +1909,14 @@ def run_job(config, stop, emit):
                                     config["model_dir"], stop, emit,
                                     separate_vocals=bool(config.get("separate_vocals", False)))
             from_asr = True
+        if from_asr:
+            # 识别听错的日文词，在这里按「日文纠正表」改对（在整理轴与翻译之前）。
+            # 只改原文；用户自己导入的 SRT 原样保留，不擅自改动。
+            # 表不存在就什么都不做（不往数据目录里塞文件）。
+            import ja_fix
+            cues, fix_report = ja_fix.fix_cues(cues)
+            for line in ja_fix.report_lines(fix_report):
+                emit("log", line)
         raw = list(cues)
         # 只整理识别结果；用户自己导入的 SRT 原样保留，不擅自改动。
         if from_asr and config.get("tidy_axis", True):
