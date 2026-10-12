@@ -906,36 +906,79 @@ class Application(tk.Tk):
             self.log(f"纠正表里本来就有「{fix['wrong']} = {fix['right']}」，这次只把项目里剩下的改成一致。")
         else:
             self.log(f"已写进纠正表：{fix['wrong']} = {fix['right']}（{fix['why'][:60]}）")
+        # 中文也要跟着变 —— 否则他看到的中文还是旧的（纠正表只改日文原文）
+        redone = self.retranslate_cues(set(changed) | {row["id"]})
         messagebox.showinfo(
             "改好了",
             f"这句的原句：{row.get('source') or ''}\n"
             f"改对之后：{fix['fixed']}\n"
             f"试翻结果：{trial_zh}\n\n"
-            f"已经写进纠正表（{fix['wrong']} = {fix['right']}），"
-            f"本片里又改对了 {changed} 条。\n"
+            f"已经写进纠正表（{fix['wrong']} = {fix['right']}）。\n"
+            f"本片改了 {len(changed)} 条原文，中文重翻了 {redone} 条。\n"
             "以后所有视频遇到同一个错，都会自动改对。")
 
-    def apply_rule_now(self, wrong, right):
-        """把刚确认的规则立刻套到当前项目上（只动日文原文），并存盘。"""
-        if not self.project or not self.project_path:
+    def retranslate_cues(self, ids):
+        """把指定条目的中文重新翻一遍。
+
+        为什么必须做：纠正表改的是**日文原文**，而项目里存着的中文是以前翻好的，
+        不重翻就不会变 —— 使用者会以为"标了没用"。
+        """
+        ids = {int(i) for i in ids if i is not None}
+        rows = [r for r in (self.project or {}).get("cues") or [] if r["id"] in ids]
+        key = self.api_key_var.get().strip()
+        if not rows or not key or not self.project_path:
             return 0
+        try:
+            client = DeepSeekClient(key, self.model_var.get().strip() or DEFAULT_MODEL)
+            glossary = self.glossary.get("1.0", "end-1c").strip()
+            language = (self.project or {}).get("language") or "ja"
+            got = client.translate_safe(
+                [Cue(r["id"], r["start"], r["end"], r.get("source") or "") for r in rows],
+                language, [], glossary)
+        except Exception as exc:                             # noqa: BLE001
+            self.log(f"中文重翻失败（{type(exc).__name__}），原文已经改对了，中文可以稍后补翻。")
+            return 0
+        count = 0
+        for r in rows:
+            zh = got.get(r["id"])
+            if zh:
+                r["zh"] = zh
+                count += 1
+        if count:
+            try:
+                save_project(self.project_path, self.project)
+            except OSError as exc:
+                self.log(f"中文重翻后存盘失败：{exc}")
+                return 0
+            self.reload_project(self.project_path)
+        return count
+
+    def apply_rule_now(self, wrong, right):
+        """把刚确认的规则立刻套到当前项目上（只动日文原文），并存盘。
+
+        返回**被改动的条号列表**（中文要不要跟着重翻由调用方决定）。
+        """
+        if not self.project or not self.project_path:
+            return []
         cues = [Cue(r["id"], r["start"], r["end"], r.get("source") or "", r.get("zh") or "")
                 for r in self.project["cues"]]
         fixed, report = ja_fix.fix_cues(cues, table=[(wrong, right)])
         if not report["changes"]:
-            return 0
+            return []
+        changed = set()
         by_id = {c.id: c for c in fixed}
         for row in self.project["cues"]:
             c = by_id.get(row["id"])
             if c is not None and c.source != (row.get("source") or ""):
                 row["source"] = c.source
+                changed.add(row["id"])
         try:
             save_project(self.project_path, self.project)
         except OSError as exc:
             self.log(f"改好了但存盘失败：{exc}")
-            return 0
+            return []
         self.reload_project(self.project_path)
-        return report["cues_changed"]
+        return sorted(changed)
 
     def save_issue(self, row, name, note):
         """真正写文件那一步（和弹窗分开，方便单独测）。返回有没有记下。"""
