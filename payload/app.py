@@ -1931,18 +1931,54 @@ class Application(tk.Tk):
         except Exception:
             return False
 
+    def safe_log(self, message):
+        """写日志，但连日志本身坏了也不能抛异常（退出路径上用）。"""
+        try:
+            self.log(message)
+        except Exception:                                    # noqa: BLE001
+            pass
+
     def close_app(self):
-        self.persist_api_key()
+        """关窗口。
+
+        ⚠️ 这里的铁律：**不管出什么错，窗口都必须关得上**。
+        真出过事：设置页因为一个 bug 没建出来，`save_settings()` 读不到控件抛异常，
+        `self.destroy()` 那一行就永远执行不到 —— 使用者只能去任务管理器结束进程。
+        所以保存都是"尽力而为"：存不下也照关，异常只写进日志。
+        """
+        try:
+            self.persist_api_key()
+        except Exception as exc:                             # noqa: BLE001
+            self.safe_log(f"退出时保存密钥失败（不影响关闭）：{type(exc).__name__}")
         if self.busy:
-            if messagebox.askyesno("任务正在运行", "停止当前任务并退出？已完成的翻译批次会保留。"):
-                self.save_settings()
+            try:
+                stop = messagebox.askyesno("任务正在运行", "停止当前任务并退出？已完成的翻译批次会保留。")
+            except Exception:                                # noqa: BLE001
+                stop = True
+            if stop:
+                self.safe_save_settings()
                 self.close_when_stopped = True
                 self.stop_job()
             return
-        if self.save_current(silent=True):
+        try:
+            saved = self.save_current(silent=True)
+        except Exception as exc:                             # noqa: BLE001
+            self.safe_log(f"退出时保存当前条目失败（不影响关闭）：{type(exc).__name__}")
+            saved = True
+        if saved:
+            self.safe_save_settings()
+            try:
+                self.api_key_var.set("")
+            except Exception:                                # noqa: BLE001
+                pass
+        self.destroy()
+
+    def safe_save_settings(self):
+        """存设置，但绝不让它挡住关闭。"""
+        try:
             self.save_settings()
-            self.api_key_var.set("")
-            self.destroy()
+        except Exception as exc:                             # noqa: BLE001
+            self.safe_log(f"设置没能保存（不影响关闭）：{type(exc).__name__}")
 
 
 if __name__ == "__main__":
