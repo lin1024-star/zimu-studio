@@ -64,5 +64,33 @@ class GuideStructureTest(unittest.TestCase):
         self.assertNotIn("148 条", self.html)
 
 
+class GuideVersionTest(unittest.TestCase):
+    """指南里的版本号必须跟软件本体一致。
+
+    真出过：软件已经 2.2，指南里到处还写着 2.0（标题、页眉、页脚、售后模板），
+    改了 151 条 FAQ 也没人发现版本号是旧的。
+    现在 make_guide.py 从 payload/core.py 读 APP_VERSION，这条测试守住这个约束。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = PAYLOAD.read_text("utf-8")
+        core = (REPO / "payload" / "core.py").read_text("utf-8")
+        cls.version = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', core, re.M).group(1)
+
+    def test_the_title_and_footer_use_the_app_version(self):
+        self.assertIn(f"SUBTITLE STUDIO · {self.version} · WINDOWS", self.html)
+        self.assertIn(f"随 SubtitleStudio {self.version} 懒人包生成", self.html)
+        self.assertIn(f"字幕工坊 {self.version} · 小白指南", self.html)
+
+    def test_no_hardcoded_old_version_left(self):
+        for stale in ("字幕工坊 2.0", "SUBTITLE STUDIO · 2.0", "① 版本：2.0", "__VERSION__"):
+            self.assertNotIn(stale, self.html, f"还残留「{stale}」")
+
+    def test_the_quick_start_text_has_the_version_too(self):
+        quick = (REPO / "先读我_快速开始.txt").read_text("utf-8-sig")
+        self.assertIn(f"字幕工坊 {self.version} 懒人完整安装包", quick)
+
+
 if __name__ == "__main__":
     unittest.main()
