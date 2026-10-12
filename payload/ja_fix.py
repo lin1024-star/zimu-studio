@@ -34,6 +34,7 @@
 · 表不存在 / 读不了 → 当作空表，不报错、不拦着识别。
 · 每一条改动都记账，供日志直接展示（使用者不懂日语，日志是他唯一的检查手段）。
 """
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -332,4 +333,128 @@ def count_issues(root=None):
     except (OSError, UnicodeError):
         return 0
     return sum(1 for part in text.split(_ISSUE_RULE) if _issue_key(part))
+
+
+# ---------------------------------------------------------------------------
+# 自动那一步：拿使用者的中文反馈，反推出正确的日文写法
+#
+# 实测（2026-10-12，SURGECITY 的真错句，原音「おしょく」被写成「お食」）：
+#   · 只给这一句 + 上下文，让模型自己猜正确写法      → 0/5
+#     （它猜 おしょく / お食事 / 追い / お食事券 —— 全不对，'お食事' 还是最初翻错的老路）
+#   · 把「同批里出现过的其它写法」喂进去             → 5/5，但软件没法知道该挑哪些句子（那是人工挑的）
+#   · 给「这一句 + 现在的译文 + 他期望的中文」        → **5/5 全对**，试翻出来的中文也对得上
+#
+# 所以：**他的中文反馈就是那把钥匙**。他不用懂日文，软件也不用瞎猜。
+# ---------------------------------------------------------------------------
+FIX_SYSTEM = (
+    "你是日语字幕校对。用户告诉你：这句语音识别的结果里有一个词听错了，"
+    "并且用中文说明了这句话**应该是什么意思**。"
+    "请把听错的那个词改成正确的日文写法 —— 只改那一处，其余一个字都不要动。"
+    '只输出 JSON：{"wrong":"","right":"","fixed":"","why":""}；'
+    "fixed 是改好之后的整句日文；整句看着没错就把 wrong 和 fixed 留空。"
+)
+
+STOP_WORDS = ("应该", "不是", "这句", "这里", "觉得", "不对", "可能", "好像", "意思",
+              "翻译", "翻成", "而是", "但是", "这个", "那个")
+
+
+def guess_fix(text, current_zh, note, context_texts, client):
+    """问一次模型：按他说的意思，这句正确的日文该怎么写。
+
+    返回 {"wrong","right","fixed","why"}；拿不到可用的答复就返回 None（宁可退回人工）。
+    """
+    user = json.dumps({"这句日文（识别结果）": text,
+                       "现在的译文": current_zh or "",
+                       "用户说这句应该是什么意思": note or "",
+                       "前后几句（同一场直播）": list(context_texts)[:6]}, ensure_ascii=False)
+    data = client.json_chat(FIX_SYSTEM, user, max_tokens=600)
+    wrong = (data.get("wrong") or "").strip()
+    right = (data.get("right") or "").strip()
+    fixed = (data.get("fixed") or "").strip()
+    if not wrong or not right or not fixed or wrong == right or wrong not in text:
+        return None
+    # 它说改好了，但除了那一处还动了别的字 → 不敢信，退回人工
+    if fixed != text.replace(wrong, right):
+        return None
+    return {"wrong": wrong, "right": right, "fixed": fixed,
+            "why": (data.get("why") or "").strip()}
+
+
+def note_keywords(note, size=2):
+    """从他的中文备注里抠出关键词（连续 2 字以上的中文），用来核对改得对不对。"""
+    words = []
+    for run in re.findall(r"[\u4e00-\u9fff]{%d,}" % size, note or ""):
+        for i in range(len(run) - size + 1):
+            word = run[i:i + size]
+            if word not in STOP_WORDS and word not in words:
+                words.append(word)
+    return words
+
+
+def matches_note(before_zh, after_zh, keywords):
+    """他要的那个变化发生了吗？（本地快速判断，只在拿到关键词时用作兜底）
+
+    判据：改后的译文里出现、而**改前没有**的关键词。
+    注意它的局限（实测踩过）：
+      · 旧译文里本来就有那个词时（比如这条早就翻对了），什么都判不出来
+      · 模型换个说法（贪污 / 腐败）就匹配不上
+    所以真正拿主意的是 judge_fix()，这里只在判官调不动时兜一下。
+    """
+    return any(kw in (after_zh or "") and kw not in (before_zh or "") for kw in keywords or [])
+
+
+JUDGE_SYSTEM = (
+    "用户在给日语字幕挑错。他用中文说这句话**应该是什么意思**（有时还会说不应该是什么）。"
+    "下面给你「改之前的译文」和「改之后的译文」。"
+    "请判断：改之后的译文，是不是表达了他要的意思？"
+    "只要求意思对上，不要求字面一样 —— 同义的说法（例如「贪污」和「腐败」）算对。"
+    '只输出 JSON：{"ok":true,"why":"一句话"}'
+)
+
+
+def judge_fix(note, before_zh, after_zh, client):
+    """让模型当判官：改后的译文对不对得上他说的意思。
+
+    比关键词匹配靠谱 —— 实测关键词法在「旧译文里本来就有这个词」和
+    「模型换个同义词」两种情况下都会误判。
+    """
+    user = json.dumps({"用户说这句应该是什么意思": note or "",
+                       "改之前的译文": before_zh or "",
+                       "改之后的译文": after_zh or ""}, ensure_ascii=False)
+    data = client.json_chat(JUDGE_SYSTEM, user, max_tokens=200)
+    return bool(data.get("ok"))
+
+
+def append_rule(wrong, right, note="", root=None, when=None):
+    """往纠正表里加一行，返回 "new" / "exists" / "conflict" / "error"。
+
+    上面配一行注释（什么时候、因为什么加的），将来想撤掉就删那两行。
+    同一个错词已经映射到别的写法时返回 conflict —— **不覆盖他原来的设置**。
+    """
+    path = table_path(root)
+    wrong, right = (wrong or "").strip(), (right or "").strip()
+    if not wrong or not right or wrong == right or "=" in wrong or "=" in right:
+        return "error"
+    if "\n" in wrong or "\n" in right:
+        return "error"
+    try:
+        old = path.read_text("utf-8") if path.is_file() else ""
+    except (OSError, UnicodeError):
+        old = ""
+    for existing, target in parse_table(old):
+        if existing == wrong:
+            return "exists" if target == right else "conflict"
+    if not path.parent.is_dir():
+        return "error"
+    stamp = when or datetime.now().strftime("%Y-%m-%d %H:%M")
+    reason = (note or "").strip() or "使用者在「这句识别错了」里确认"
+    try:
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
+            if old and not old.endswith("\n"):
+                handle.write("\n")
+            handle.write(f"# {stamp} 自动加入：{reason}\n")
+            handle.write(f"{wrong} = {right}\n")
+    except OSError:
+        return "error"
+    return "new"
 

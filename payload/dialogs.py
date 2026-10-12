@@ -966,10 +966,11 @@ class JaIssueDialog(tk.Toplevel):
         entry = ttk.Entry(body, textvariable=self.note)
         entry.pack(fill="x")
 
-        hint = ("记下来不会自动改任何东西。攒几条之后，把「日文原文」拿给懂日语的人核对，"
-                "问出正确写法填进「日文纠正表.txt」，以后同样的错就不会再出现。")
+        hint = ("写清楚「应该是什么意思」（例如「应该是贪污」），软件会自己推出正确的日文、"
+                "试翻一遍核对，然后写进「日文纠正表」——以后所有视频都不会再错。\n"
+                "不写这一句的话，就只把问题记下来，留给懂日语的人看。")
         if saved_count:
-            hint += f"　目前已经记了 {saved_count} 条。"
+            hint += f"　（目前待处理文件里已经记了 {saved_count} 条）"
         ttk.Label(body, text=hint, wraplength=640, style="Muted.TLabel",
                   justify="left").pack(anchor="w", pady=(14, 0))
 

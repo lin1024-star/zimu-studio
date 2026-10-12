@@ -1594,6 +1594,30 @@ class DeepSeekClient:
             # 必须换温度：temperature = 0 会把同一个失败原样复现一遍。
             return self.translate(cues, language, context, glossary, temperature=RETRY_TEMPERATURE)
 
+    def json_chat(self, system, user, max_tokens=800):
+        """问一句、要一个 JSON 回来。
+
+        给「这句识别错了」用：拿使用者的中文反馈去反推正确的日文写法。
+        走的是和翻译同一条通道（含代理兜底、重试、用量统计），所以报错口径也一致。
+        """
+        body = {"model": self.model,
+                "messages": [{"role": "system", "content": system},
+                             {"role": "user", "content": user}],
+                "response_format": {"type": "json_object"}, "max_tokens": max_tokens,
+                "stream": False, "thinking": {"type": "disabled"}, "temperature": 0}
+        response = self.transport(body)
+        usage = response.get("usage", {})
+        self.input_tokens += int(usage.get("prompt_tokens", 0) or 0)
+        self.output_tokens += int(usage.get("completion_tokens", 0) or 0)
+        try:
+            content = response["choices"][0]["message"]["content"]
+        except (KeyError, TypeError, IndexError) as exc:
+            raise ResponseError("模型没有返回可用的内容。") from exc
+        try:
+            return json.loads(content)
+        except (ValueError, TypeError) as exc:
+            raise ResponseError("模型没有返回可用的 JSON。") from exc
+
 
 def translate_project(path, project, key, model, glossary, stop, emit, force=False, client=None):
     check_cancel(stop)

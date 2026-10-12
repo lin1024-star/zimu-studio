@@ -434,5 +434,176 @@ class IssueRecordTest(unittest.TestCase):
         self.assertFalse(re.search(r"[\u3040-\u30ff]", note), "备注里不该有假名（使用者不懂日语）")
 
 
+class FakeClient:
+    """假模型：按剧本返回 JSON，不联网。"""
+
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    def json_chat(self, system, user, max_tokens=800):
+        self.calls.append({"system": system, "user": user, "max_tokens": max_tokens})
+        return self.payload
+
+
+class GuessFixTest(unittest.TestCase):
+    """拿使用者的中文反馈反推正确日文 —— 这是「自动写纠正表」的核心那一步。
+
+    实测依据：只给这一句 + 上下文，模型自己猜正确写法是 0/5；
+    给上「他期望的中文」之后是 5/5。所以这里重点测：他的反馈有没有真的传进去、
+    以及模型返回不合逻辑时敢不敢拒收。
+    """
+
+    TEXT = "お食大好き警察官"
+
+    def payload(self, **over):
+        data = {"wrong": "お食", "right": "汚職", "fixed": "汚職大好き警察官", "why": "同音错字"}
+        data.update(over)
+        return data
+
+    def test_a_clean_answer_is_accepted(self):
+        client = FakeClient(self.payload())
+        fix = ja_fix.guess_fix(self.TEXT, "我是最喜欢吃饭的警察", "应该是贪污",
+                              ["わーい", "こんにちは"], client)
+        self.assertEqual(fix["wrong"], "お食")
+        self.assertEqual(fix["right"], "汚職")
+        self.assertEqual(fix["fixed"], "汚職大好き警察官")
+
+    def test_his_chinese_feedback_is_sent_to_the_model(self):
+        client = FakeClient(self.payload())
+        ja_fix.guess_fix(self.TEXT, "我是最喜欢吃饭的警察", "应该是贪污", ["わーい"], client)
+        sent = client.calls[0]["user"]
+        self.assertIn("应该是贪污", sent)
+        self.assertIn("我是最喜欢吃饭的警察", sent)
+        self.assertIn("わーい", sent)
+
+    def test_an_answer_that_touches_other_words_is_rejected(self):
+        # 模型说改好了，但除了那一处还动了别的字 —— 不敢信
+        client = FakeClient(self.payload(fixed="汚職が大好きな警察官"))
+        self.assertIsNone(ja_fix.guess_fix(self.TEXT, "", "应该是贪污", [], client))
+
+    def test_a_word_that_is_not_in_the_sentence_is_rejected(self):
+        client = FakeClient(self.payload(wrong="お食事"))
+        self.assertIsNone(ja_fix.guess_fix(self.TEXT, "", "应该是贪污", [], client))
+
+    def test_empty_or_identical_answers_are_rejected(self):
+        for over in ({"right": ""}, {"wrong": ""}, {"fixed": ""}, {"right": "お食"}):
+            self.assertIsNone(ja_fix.guess_fix(self.TEXT, "", "x", [], FakeClient(self.payload(**over))), over)
+
+    def test_the_client_is_asked_for_json(self):
+        client = FakeClient(self.payload())
+        ja_fix.guess_fix(self.TEXT, "", "应该是贪污", [], client)
+        self.assertIn("JSON", client.calls[0]["system"])
+
+
+class JudgeFixTest(unittest.TestCase):
+    """让模型当判官：改后的译文对不对得上他说的意思。
+
+    为什么不用关键词匹配当主判据（实测踩过）：
+      · 旧译文里本来就有那个词时（这条早就翻对了），关键词法什么都判不出来
+      · 模型换个同义词（贪污 / 腐败）就匹配不上
+    """
+
+    def test_the_judge_says_yes(self):
+        client = FakeClient({"ok": True, "why": "意思一致"})
+        self.assertTrue(ja_fix.judge_fix("应该是贪污", "吃饭的警察", "腐败的警察", client))
+
+    def test_the_judge_says_no(self):
+        client = FakeClient({"ok": False, "why": "还是吃饭"})
+        self.assertFalse(ja_fix.judge_fix("应该是贪污", "吃饭的警察", "吃饭的警察", client))
+
+    def test_his_note_and_both_versions_are_sent(self):
+        client = FakeClient({"ok": True})
+        ja_fix.judge_fix("应该是贪污", "改前", "改后", client)
+        sent = client.calls[0]["user"]
+        self.assertIn("应该是贪污", sent)
+        self.assertIn("改前", sent)
+        self.assertIn("改后", sent)
+
+    def test_a_silent_judge_is_treated_as_no(self):
+        self.assertFalse(ja_fix.judge_fix("x", "a", "b", FakeClient({})))
+
+
+class NoteKeywordsTest(unittest.TestCase):
+    def test_chinese_keywords_are_picked_up(self):
+        self.assertIn("贪污", ja_fix.note_keywords("应该是贪污"))
+
+    def test_stop_words_are_dropped(self):
+        words = ja_fix.note_keywords("应该不是这句的问题")
+        self.assertNotIn("应该", words)
+        self.assertNotIn("不是", words)
+
+    def test_an_empty_note_gives_nothing(self):
+        self.assertEqual(ja_fix.note_keywords(""), [])
+        self.assertEqual(ja_fix.note_keywords("abc 123"), [])
+
+    def test_latin_and_punctuation_are_ignored(self):
+        self.assertEqual(ja_fix.note_keywords("「」、。！？"), [])
+
+
+class MatchesNoteTest(unittest.TestCase):
+    """核对：改完的中文里，有没有出现「他说过、而原来没有」的词。"""
+
+    def test_the_change_he_asked_for_counts_as_a_match(self):
+        self.assertTrue(ja_fix.matches_note("我是最喜欢吃饭的警察", "最喜欢贪污的警察",
+                                            ja_fix.note_keywords("应该是贪污")))
+
+    def test_the_wrong_candidate_does_not_match(self):
+        # 这就是实测里"お食事"那条错路：中文还是吃的
+        self.assertFalse(ja_fix.matches_note("我是最喜欢吃饭的警察", "最喜欢美食的警察",
+                                             ja_fix.note_keywords("应该是贪污")))
+
+    def test_common_words_shared_by_both_do_not_count(self):
+        # 「警察」两边都有，不能拿它当命中的理由
+        self.assertFalse(ja_fix.matches_note("吃饭的警察", "美食的警察",
+                                             ja_fix.note_keywords("警察应该对")))
+
+    def test_no_keywords_means_no_match(self):
+        self.assertFalse(ja_fix.matches_note("啊", "诶", []))
+
+
+class AppendRuleTest(unittest.TestCase):
+    def test_a_new_rule_is_written_with_a_comment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ja_fix.TABLE_NAME).write_text("お食 = 汚職\n", encoding="utf-8")
+            state = ja_fix.append_rule("お食系官", "汚職警官", "他确认过", root=tmp, when="2026-10-12 23:50")
+            text = (Path(tmp) / ja_fix.TABLE_NAME).read_text(encoding="utf-8")
+        self.assertEqual(state, "new")
+        self.assertIn("お食系官 = 汚職警官", text)
+        self.assertIn("2026-10-12 23:50", text)
+        self.assertIn("他确认过", text)
+
+    def test_the_new_rule_is_usable_right_away(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ja_fix.TABLE_NAME).write_text("", encoding="utf-8")
+            ja_fix.append_rule("お食", "汚職", root=tmp)
+            self.assertEqual(ja_fix.load_table(tmp), [("お食", "汚職")])
+
+    def test_the_same_rule_is_reported_as_existing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ja_fix.TABLE_NAME).write_text("お食 = 汚職\n", encoding="utf-8")
+            self.assertEqual(ja_fix.append_rule("お食", "汚職", root=tmp), "exists")
+            self.assertEqual(ja_fix.count_word([Cue(1, 0, 1, "お食")], "お食"), 1)
+
+    def test_a_different_target_is_a_conflict_and_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ja_fix.TABLE_NAME
+            path.write_text("お食 = 别的写法\n", encoding="utf-8")
+            self.assertEqual(ja_fix.append_rule("お食", "汚職", root=tmp), "conflict")
+            self.assertIn("别的写法", path.read_text(encoding="utf-8"))
+
+    def test_a_missing_folder_is_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "没有这个目录"
+            self.assertEqual(ja_fix.append_rule("お食", "汚職", root=str(missing)), "error")
+            self.assertFalse(missing.exists())
+
+    def test_rubbish_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ja_fix.TABLE_NAME).write_text("", encoding="utf-8")
+            for wrong, right in (("", "汚職"), ("お食", ""), ("お食", "お食"), ("a = b", "c"), ("お食", "a=b")):
+                self.assertEqual(ja_fix.append_rule(wrong, right, root=tmp), "error", (wrong, right))
+
+
 if __name__ == "__main__":
     unittest.main()

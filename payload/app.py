@@ -14,7 +14,8 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
-from core import (APP_VERSION, DEFAULT_MODEL, GLOSSARY_LIMIT, Cue, UserError, atomic_write, clean,
+from core import (APP_VERSION, DEFAULT_MODEL, GLOSSARY_LIMIT, Cue, DeepSeekClient, UserError,
+                  atomic_write, clean,
                   export_files, glossary_hits, import_srt_project, insert_project_cue, load_project,
                   parse_glossary, parse_time, read_srt, restore_axis_cues, save_duration_change,
                   save_offset_change, save_project, set_project_duration,
@@ -801,7 +802,128 @@ class Application(tk.Tk):
         self.wait_window(dialog)
         if dialog.result is None:
             return
-        self.save_issue(row, name, dialog.result.get("note", ""))
+        note = dialog.result.get("note", "")
+        # 他写清楚了「应该是什么意思」→ 软件自己反推正确日文、核对、写进纠正表
+        if ja_fix.note_keywords(note) and self.api_key_var.get().strip():
+            self.auto_fix_issue(row, name, note)
+        else:
+            if ja_fix.note_keywords(note) is False and not self.api_key_var.get().strip():
+                self.log("没有填 API 密钥，跳过自动推写法，改为记下来。")
+            self.save_issue(row, name, note)
+
+    def auto_fix_issue(self, row, name, note):
+        """自动那一步：拿他的中文期望反推正确日文 → 试翻核对 → 写进纠正表并立刻生效。
+
+        为什么能行（2026-10-12 实测，SURGECITY 的真错句）：
+          · 只给这一句+上下文让模型自己猜   → 0/5（它猜 おしょく / お食事 / 追い…）
+          · 给「这一句 + 现在译文 + 他期望的中文」→ **5/5 全对**
+        所以他的中文反馈就是那把钥匙 —— 他不用懂日文。
+        """
+        key = self.api_key_var.get().strip()
+        model = self.model_var.get().strip() or DEFAULT_MODEL
+        glossary = self.glossary.get("1.0", "end-1c").strip()
+        cues = (self.project or {}).get("cues") or []
+        idx = next((i for i, r in enumerate(cues) if r["id"] == row["id"]), None)
+        context = ([cues[i].get("source") or "" for i in range(max(0, idx - 3), min(len(cues), idx + 4))
+                    if i != idx] if idx is not None else [])
+        language = (self.project or {}).get("language") or "ja"
+        before_zh = row.get("zh") or ""
+        keywords = ja_fix.note_keywords(note)
+        self.status_var.set("正在问模型：这句正确的日文该怎么写…")
+        self.log(f"第 {row['id']} 条：拿你说的「{note}」去反推正确写法，并试翻一次核对。")
+        box = {"done": False, "fix": None, "zh": "", "ok": None, "error": None}
+
+        def work():
+            try:
+                client = DeepSeekClient(key, model)
+                box["fix"] = ja_fix.guess_fix(row.get("source") or "", before_zh, note, context, client)
+                if box["fix"]:
+                    cue = Cue(row["id"], row["start"], row["end"], box["fix"]["fixed"])
+                    got = client.translate_safe([cue], language, [], glossary)
+                    box["zh"] = got.get(row["id"], "")
+                    try:
+                        # 让模型当判官：改后的译文对不对得上他说的意思。
+                        # （本地关键词匹配在"旧译文本来就有这个词"和"换个同义词"时会误判，实测踩过）
+                        box["ok"] = ja_fix.judge_fix(note, before_zh, box["zh"], client)
+                    except Exception:                        # noqa: BLE001
+                        box["ok"] = None
+            except Exception as exc:                     # noqa: BLE001
+                box["error"] = exc
+            finally:
+                box["done"] = True
+
+        threading.Thread(target=work, daemon=True).start()
+        self.after(200, lambda: self._wait_auto_fix(box, row, name, note, before_zh, keywords))
+
+    def _wait_auto_fix(self, box, row, name, note, before_zh, keywords):
+        """等后台那几下跑完（不卡界面），然后决定是写表还是记下来。"""
+        if not box["done"]:
+            self.after(200, lambda: self._wait_auto_fix(box, row, name, note, before_zh, keywords))
+            return
+        self.status_var.set("")
+        fix = box["fix"]
+        if box["error"] is not None:
+            self.log(f"自动推写法失败（{type(box['error']).__name__}），改为记下来。")
+            self.save_issue(row, name, note)
+            return
+        if not fix:
+            self.log("模型看不出这句哪里听错了，改为记下来留给懂日语的人。")
+            self.save_issue(row, name, note)
+            return
+        approved = box["ok"]
+        if approved is None:      # 判官没答上来时，退回本地关键词兜底
+            approved = ja_fix.matches_note(before_zh, box["zh"], keywords)
+            self.log("判官没答上来，改用本地关键词兜底核对。")
+        if not approved:
+            self.log(f"试翻出来的中文是「{box['zh']}」，没对上你说的意思，不敢自动写表，改为记下来。")
+            self.save_issue(row, name, note)
+            return
+        state = ja_fix.append_rule(fix["wrong"], fix["right"], note)
+        if state == "conflict":
+            messagebox.showwarning("纠正表里有冲突",
+                                   f"表里已经有「{fix['wrong']} = 别的写法」，没有覆盖它。\n\n"
+                                   f"模型建议的是：{fix['wrong']} = {fix['right']}\n"
+                                   "想改的话，请手动编辑 D:\\字幕工坊\\日文纠正表.txt。")
+            return
+        if state == "error":
+            self.log("写纠正表失败（可能没有写入权限），改为记下来。")
+            self.save_issue(row, name, note)
+            return
+        changed = self.apply_rule_now(fix["wrong"], fix["right"])
+        if state == "exists":
+            self.log(f"纠正表里本来就有「{fix['wrong']} = {fix['right']}」，这次只把项目里剩下的改成一致。")
+        else:
+            self.log(f"已写进纠正表：{fix['wrong']} = {fix['right']}（{fix['why'][:60]}）")
+        messagebox.showinfo(
+            "改好了",
+            f"这句的原句：{row.get('source') or ''}\n"
+            f"改对之后：{fix['fixed']}\n"
+            f"试翻结果：{box['zh']}\n\n"
+            f"已经写进纠正表（{fix['wrong']} = {fix['right']}），"
+            f"本片里又改对了 {changed} 条。\n"
+            "以后所有视频遇到同一个错，都会自动改对。")
+
+    def apply_rule_now(self, wrong, right):
+        """把刚确认的规则立刻套到当前项目上（只动日文原文），并存盘。"""
+        if not self.project or not self.project_path:
+            return 0
+        cues = [Cue(r["id"], r["start"], r["end"], r.get("source") or "", r.get("zh") or "")
+                for r in self.project["cues"]]
+        fixed, report = ja_fix.fix_cues(cues, table=[(wrong, right)])
+        if not report["changes"]:
+            return 0
+        by_id = {c.id: c for c in fixed}
+        for row in self.project["cues"]:
+            c = by_id.get(row["id"])
+            if c is not None and c.source != (row.get("source") or ""):
+                row["source"] = c.source
+        try:
+            save_project(self.project_path, self.project)
+        except OSError as exc:
+            self.log(f"改好了但存盘失败：{exc}")
+            return 0
+        self.reload_project(self.project_path)
+        return report["cues_changed"]
 
     def save_issue(self, row, name, note):
         """真正写文件那一步（和弹窗分开，方便单独测）。返回有没有记下。"""
