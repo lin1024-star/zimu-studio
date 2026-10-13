@@ -26,9 +26,11 @@ from core import (APP_VERSION, DEFAULT_MODEL, GLOSSARY_LIMIT, Cue, DeepSeekClien
                   profile_text, recommend_model,
                   default_export_keys, default_export_selection, export_choices, should_alert)
 from diagnostics import PHASES, Diagnostics, error_info
-from dialogs import (AddCueDialog, AssStyleDialog, DurationDialog, ExportDialog, JaFixConfirmDialog,
+from dialogs import (AddCueDialog, AssStyleDialog, ChineseCheckDialog, DurationDialog,
+                     ExportDialog, JaFixConfirmDialog,
                      JaIssueDialog, OffsetDialog, SrtImportDialog, TimelineQcDialog)
 from paths import data_root
+import chinese_check
 import ja_fix
 import timeline_qc
 
@@ -170,6 +172,7 @@ class Application(tk.Tk):
         self.stop_time = None
         self.seen_terminal = False
         self.close_when_stopped = False
+        self.checking = False          # 中文自检是否正在跑
         self.current_config = None
         self.active_stage = ""
         self.task_kind = "job"
@@ -210,6 +213,8 @@ class Application(tk.Tk):
         self.alert_var = tk.BooleanVar(value=bool(self.settings.get("alert_when_done", True)))
         self.tidy_var = tk.BooleanVar(value=bool(self.settings.get("tidy_axis", True)))
         self.separate_var = tk.BooleanVar(value=bool(self.settings.get("separate_vocals", False)))
+        # 翻译完自动做一遍中文自检（找"可能翻错、会让你剪错"的句子）。默认开。
+        self.ccheck_var = tk.BooleanVar(value=bool(self.settings.get("chinese_check", True)))
         self.model_hint_var = tk.StringVar()
         # 「怎么选模型」那一块用：检测结果、推荐、当前选中模型的长短处
         self.hardware_var = tk.StringVar()
@@ -269,6 +274,7 @@ class Application(tk.Tk):
                 "ass_style_file": self.ass_style_var.get(), "ass_style_name": self.ass_style_name_var.get(),
                 "alert_when_done": bool(self.alert_var.get()),
                 "tidy_axis": bool(self.tidy_var.get()),
+                "chinese_check": bool(self.ccheck_var.get()),
                 "separate_vocals": bool(self.separate_var.get())}
         try:
             atomic_write(CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
@@ -464,6 +470,14 @@ class Application(tk.Tk):
         self.button(row, "这句识别错了", self.report_issue, side="left", padx=8, busy=False)
         ttk.Label(row, text="（清空中文可补译此条）", style="Muted.TLabel").pack(side="left", padx=6)
 
+        ccheck_row = ttk.Frame(main)
+        ccheck_row.grid(row=8, column=0, sticky="ew", pady=(6, 0))
+        self.ccheck_button = ttk.Button(ccheck_row, text="中文自检（找可能翻错的句子）",
+                                        command=self.run_chinese_check)
+        self.ccheck_button.pack(side="left")
+        ttk.Label(ccheck_row, text="翻译完自动跑一遍；这里可以随时重跑。只报不改，点结果能跳到那一条。",
+                  style="Muted.TLabel").pack(side="left", padx=8)
+
         export = ttk.Frame(main)
         export.grid(row=9, column=0, sticky="ew", pady=(14, 6))
         ttk.Label(export, text="④ 导出", font=(FONT_FAMILY, 11, "bold")).pack(side="left", padx=(0, 10))
@@ -579,6 +593,14 @@ class Application(tk.Tk):
         ttk.Label(settings, textvariable=self.selected_model_var, style="Muted.TLabel").grid(
             row=34, column=1, columnspan=2, sticky="w", pady=(4, 0))
         self.refresh_hardware_hint()
+
+        # ---- 中文自检（放在设置页最后一行，避免打乱上面的行号）----
+        ttk.Separator(settings).grid(row=35, column=0, columnspan=3, sticky="ew", pady=14)
+        ttk.Checkbutton(settings, text="翻译完成后自动检查中文（挑出可能翻错、会让你剪错的地方）",
+                        variable=self.ccheck_var).grid(row=36, column=0, columnspan=3, sticky="w", pady=(0, 2))
+        ttk.Label(settings, text="只挑会让你剪错的错：专名听错、意思反了、中文不成话、前后矛盾；"
+                  "措辞不同不算。只报不改，改还是你说了算。一期素材约几分钱，不想等就取消勾选。",
+                  style="Muted.TLabel").grid(row=37, column=1, columnspan=2, sticky="w")
 
         gpu_btn = ttk.Button(settings, text="启用显卡加速", command=self.start_gpu_setup, style="Accent.TButton")
         gpu_btn.grid(row=11, column=2, padx=10, pady=6)
@@ -1593,6 +1615,7 @@ class Application(tk.Tk):
                     self.alert_when_finished(value)
                     self.announce_axis_review()
                     self.refresh_model_hint()
+                    self.maybe_auto_chinese_check()
                 elif kind in ("error", "cancelled"):
                     self.seen_terminal = True
                     self.last_job_ok = False
@@ -1687,6 +1710,108 @@ class Application(tk.Tk):
             parts.append(f"{shorts} 条过短")
         if parts:
             self.log("待确认：" + "、".join(parts) + "。点「待确认…」查看，程序不会替你删改。")
+
+    def maybe_auto_chinese_check(self):
+        """翻译完自动跑一遍中文自检（设置里可以关）。
+
+        为什么不在 done 里直接弹窗：排队处理多个文件时，每导出一个就弹一个框会打断人。
+        所以自动模式只写日志 + 把按钮文字改成「⚠ N 处可能翻错」，想看再点。
+        """
+        if not self.ccheck_var.get():
+            return
+        if not any((c.get("zh") or "").strip() for c in (self.project or {}).get("cues") or []):
+            return
+        self.after(600, lambda: self.run_chinese_check(auto=True))
+
+    def run_chinese_check(self, auto=False):
+        """中文自检：挑出「可能翻错、会让你剪错」的句子。
+
+        为什么做（实测记录见 chinese_check 模块开头）：使用者不懂日语，
+        翻译错了他是看不出来的 —— 会照着错的意思剪片子。所以翻译完再扫一遍。
+        成绩：朗读剧召回 7/7；干净素材 112 条只报 3 处且全中；一期约几分钱。
+
+        auto=True 时不弹窗（排队处理多个文件时不能打断），只写日志 + 更新按钮。
+        """
+        if self.checking:
+            return
+        if not self.project or not self.project.get("cues"):
+            if not auto:
+                messagebox.showinfo("先载入字幕", "请先完成识别 / 翻译，或打开项目。")
+            return
+        key = self.api_key_var.get().strip()
+        if not key:
+            if not auto:
+                messagebox.showinfo("需要 API 密钥", "中文自检要问模型，请先在设置里填好 API 密钥。")
+            return
+        if not self.save_current(silent=True):
+            return
+        cues = [dict(c) for c in self.project["cues"] if (c.get("zh") or "").strip()]
+        if not cues:
+            if not auto:
+                self.log("还没有中文字幕，自检没有可检查的内容。")
+            return
+        model = self.model_var.get().strip() or DEFAULT_MODEL
+        glossary = self.glossary.get("1.0", "end-1c").strip()
+        batches = (len(cues) + chinese_check.BATCH - 1) // chinese_check.BATCH
+        self.checking = True
+        self.status_var.set("正在检查中文…")
+        self.log(f"中文自检开始：{len(cues)} 条，分 {batches} 批问模型。")
+        box = {"done": False, "result": None, "error": None}
+
+        def work():
+            try:
+                client = DeepSeekClient(key, model)
+                box["result"] = chinese_check.check(cues, glossary, client)
+            except Exception as exc:                          # noqa: BLE001
+                box["error"] = exc
+            finally:
+                box["done"] = True
+
+        threading.Thread(target=work, daemon=True).start()
+        self.after(300, lambda: self._wait_chinese_check(box, auto))
+
+    def _wait_chinese_check(self, box, auto):
+        """等自检跑完（不卡界面），把结果存进项目、写日志、更新按钮。"""
+        if not box["done"]:
+            self.after(300, lambda: self._wait_chinese_check(box, auto))
+            return
+        self.checking = False
+        self.status_var.set("")
+        if box["error"] is not None:
+            self.log(f"中文自检没跑成（{type(box['error']).__name__}），不影响导出。")
+            if not auto:
+                messagebox.showwarning("中文自检没跑成",
+                                       f"{box['error']}\n\n自检只是帮忙看一眼，失败不影响字幕和导出。")
+            return
+        result = box["result"] or {"items": []}
+        items = result.get("items") or []
+        total = len(self.project.get("cues") or [])
+        # 存进项目：下次打开还在（导出的字幕文件不受影响）
+        try:
+            self.project["chinese_check"] = {
+                "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "items": items,
+            }
+            if self.project_path:
+                core.save_project(self.project_path, self.project)
+        except Exception:                                     # noqa: BLE001
+            self.log("自检结果没能存进项目（不影响使用）。")
+        self.log(chinese_check.summarize(items, total))
+        self.update_ccheck_button(len(items))
+        if not auto:
+            dialog = ChineseCheckDialog(self, items, total=total,
+                                        batches=result.get("batches", 0),
+                                        failed=result.get("failed", 0),
+                                        on_jump=self.jump_to_cue,
+                                        on_rerun=self.run_chinese_check)
+            self.wait_window(dialog)
+
+    def update_ccheck_button(self, count):
+        """按钮文字跟着结果走：有可疑就写几处，让人一眼看见。"""
+        if not hasattr(self, "ccheck_button"):
+            return
+        self.ccheck_button.configure(
+            text=("⚠ %d 处可能翻错（点开看）" % count) if count else "中文自检（没发现问题）")
 
     def check_timeline(self):
         """时间轴体检：不听音频，只查字幕本身的硬伤。
@@ -2008,13 +2133,21 @@ class Application(tk.Tk):
             messagebox.showinfo("输出位置", str(folder))
 
     def persist_api_key(self):
-        """按勾选状态保存或清除本机密钥；返回是否成功。"""
+        """按勾选状态保存或清除本机密钥；返回是否成功。
+
+        **只在明确取消勾选时清除。** 勾着但输入框是空的 → 什么都不做。
+
+        为什么（真出过两次事）：原来是 `if 勾着 and 框里有内容: 存 else: 删`，
+        于是任何「把密钥框清空」的路径（界面异常、测试脚本）在退出时都会把
+        存好的密钥删掉，使用者得重新粘一遍。2026-10-13 被这个坑了两次。
+        """
         try:
             from winsecret import forget_key, save_key
-            if self.remember_var.get() and self.api_key_var.get().strip():
+            if not self.remember_var.get():
+                forget_key()                      # 明确取消勾选 → 清除（说明里就是这么写的）
+            elif self.api_key_var.get().strip():
                 save_key(self.api_key_var.get().strip())
-            else:
-                forget_key()
+            # 勾着但框是空的：不动已存的密钥
             return True
         except Exception:
             return False

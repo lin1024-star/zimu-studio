@@ -567,6 +567,92 @@ class TimelineQcDialog(tk.Toplevel):
             self.destroy()
 
 
+class ChineseCheckDialog(tk.Toplevel):
+    """中文自检结果：列出「可能翻错、会让你剪错」的句子，双击跳到那一条。
+
+    为什么要做这个（实测记录见 chinese_check 模块开头）：
+    使用者不懂日语，翻译错了他是看不出来的 —— 会照着错的意思剪片子。
+    所以翻译完之后再扫一遍，把可疑的句子挑出来给他。
+    **只报不改**：改还是他说了算，跟纠正表一个规矩。
+    """
+
+    def __init__(self, parent, items, total=None, batches=0, failed=0,
+                 on_jump=None, on_rerun=None):
+        super().__init__(parent)
+        self.on_jump = on_jump or (lambda _id: None)
+        self.on_rerun = on_rerun
+        self.items = list(items or [])
+        self.title("中文自检")
+        self.configure(padx=12, pady=10)
+        self.transient(parent)
+        self.geometry("960x580")
+
+        ttk.Label(self, text="翻译完之后再扫一遍，挑出可能翻错、会让你剪错的地方。只报不改。",
+                  style="Muted.TLabel").pack(anchor="w")
+
+        head = tk.Frame(self)
+        head.pack(fill="x", pady=(6, 8))
+        if self.items:
+            text = "发现 %d 处可疑" % len(self.items)
+            if total:
+                text += "（共 %d 条，平均每 %d 条 1 处）" % (total, max(1, round(total / len(self.items))))
+        else:
+            text = "没有发现可疑的地方"
+        tk.Label(head, text=text, font=(FONT_FAMILY, 11, "bold")).pack(side="left")
+        if self.items:
+            tk.Label(head, text="　（双击任意一行可以跳到那一条）",
+                     fg="#666666").pack(side="left")
+        if failed:
+            tk.Label(head, text="　⚠ %d 批没跑成，结果不完整" % failed,
+                     fg="#a33").pack(side="left")
+
+        if not self.items:
+            ttk.Label(self, text="这句素材的中文没有看出问题 —— 可以直接导出。\n"
+                                 "（自检只找「会让剪辑剪错」的错：专名听错、意思反了、"
+                                 "中文不成话、前后矛盾。措辞不同不算。）",
+                      style="Muted.TLabel", justify="left").pack(anchor="w", pady=16)
+        else:
+            table = tk.Frame(self)
+            table.pack(fill="both", expand=True)
+            self.tree = ttk.Treeview(table, columns=("time", "zh", "why"),
+                                     show="headings", selectmode="browse", height=18)
+            for key, title, width in (("time", "时间", 90), ("zh", "中文（可能有错）", 330),
+                                      ("why", "为什么可疑", 520)):
+                self.tree.heading(key, text=title)
+                self.tree.column(key, width=width, minwidth=60,
+                                 stretch=(key != "time"), anchor="w")
+            bar = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
+            self.tree.configure(yscrollcommand=bar.set)
+            self.tree.pack(side="left", fill="both", expand=True)
+            bar.pack(side="right", fill="y")
+            for item in self.items:
+                self.tree.insert("", "end", iid=str(item["id"]),
+                                 values=(timestamp(item["start"]),
+                                         (item.get("zh") or "")[:60],
+                                         (item.get("why") or "")[:120]))
+            self.tree.bind("<Double-1>", self._jump)
+            self.tree.bind("<Return>", self._jump)
+
+        btns = tk.Frame(self)
+        btns.pack(fill="x", pady=(10, 0))
+        ttk.Button(btns, text="关闭", command=self.destroy).pack(side="right")
+        if on_rerun is not None:
+            ttk.Button(btns, text="重新检查", command=self._rerun).pack(side="right", padx=8)
+
+    def _selected_id(self):
+        sel = self.tree.selection() if hasattr(self, "tree") else ()
+        return int(sel[0]) if sel else None
+
+    def _jump(self, _event=None):
+        cue_id = self._selected_id()
+        if cue_id is not None:
+            self.on_jump(cue_id)
+
+    def _rerun(self):
+        self.destroy()
+        self.on_rerun()
+
+
 class ExportDialog(tk.Toplevel):
     """导出前勾选要哪几份。默认全选已有的 7 项，空轴不默认勾。"""
 
