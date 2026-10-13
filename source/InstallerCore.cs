@@ -125,7 +125,7 @@ namespace SubtitleEasy {
         }
     }
     internal static class Installer {
-        public const string Version="2.2";
+        public const string Version="2.3";
         public const string RegistryKey="Software\\SubtitleStudio";
         public static string DefaultRoot {get{return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"SubtitleStudio");}}
         public static string ConfiguredRoot {
