@@ -568,12 +568,16 @@ class TimelineQcDialog(tk.Toplevel):
 
 
 class ChineseCheckDialog(tk.Toplevel):
-    """中文自检结果：列出「可能翻错、会让你剪错」的句子，双击跳到那一条。
+    """中文自检结果：把每一条可疑的**完整内容**列出来，双击跳到那一条。
 
-    为什么要做这个（实测记录见 chinese_check 模块开头）：
-    使用者不懂日语，翻译错了他是看不出来的 —— 会照着错的意思剪片子。
-    所以翻译完之后再扫一遍，把可疑的句子挑出来给他。
-    **只报不改**：改还是他说了算，跟纠正表一个规矩。
+    为什么要做成"一整块可滚动的清单"而不是表格（2026-10-14 使用者反馈两次"看不全"）：
+    表格的列宽是固定的 —— 实测「为什么可疑」那列 540 像素，而一句话要 1681 像素，
+    超过就被切掉 ✗ 加详情区也没用：他还是会在表格那一列里找。
+    所以干脆不用表格：每条写成一小段，中文/原因/日文全写出来，超长就自动折行，
+    整个区域可滚动 —— 这样**不存在任何截断**。
+
+    为什么要做这个功能（实测见 chinese_check 模块开头）：使用者不懂日语，
+    翻译错了看不出来，会照着错的意思剪片子。**只报不改**，改还是他说了算。
     """
 
     def __init__(self, parent, items, total=None, batches=0, failed=0,
@@ -582,16 +586,17 @@ class ChineseCheckDialog(tk.Toplevel):
         self.on_jump = on_jump or (lambda _id: None)
         self.on_rerun = on_rerun
         self.items = list(items or [])
-        self.title("中文自检")
+        self.title("中文自检 · 可能翻错的地方")
         self.configure(padx=12, pady=10)
         self.transient(parent)
-        self.geometry("960x580")
+        self.geometry("1060x720")
+        self.minsize(760, 420)
 
         ttk.Label(self, text="翻译完之后再扫一遍，挑出可能翻错、会让你剪错的地方。只报不改。",
                   style="Muted.TLabel").pack(anchor="w")
 
         head = tk.Frame(self)
-        head.pack(fill="x", pady=(6, 8))
+        head.pack(fill="x", pady=(6, 6))
         if self.items:
             text = "发现 %d 处可疑" % len(self.items)
             if total:
@@ -600,7 +605,7 @@ class ChineseCheckDialog(tk.Toplevel):
             text = "没有发现可疑的地方"
         tk.Label(head, text=text, font=(FONT_FAMILY, 11, "bold")).pack(side="left")
         if self.items:
-            tk.Label(head, text="　（双击任意一行可以跳到那一条）",
+            tk.Label(head, text="　（双击任意一条可以跳到那一条；内容都完整写出来了，看不全就往下滚）",
                      fg="#666666").pack(side="left")
         if failed:
             tk.Label(head, text="　⚠ %d 批没跑成，结果不完整" % failed,
@@ -612,78 +617,60 @@ class ChineseCheckDialog(tk.Toplevel):
                                  "中文不成话、前后矛盾。措辞不同不算。）",
                       style="Muted.TLabel", justify="left").pack(anchor="w", pady=16)
         else:
-            # 列表只放摘要，**完整内容放到下面的详情区** ——
-            # 第一版把中文截成 60 字、原因截成 120 字，结果使用者抱怨"看不全"，
-            # 改这里别再截断内容，只控制列宽。
-            table = tk.Frame(self)
-            table.pack(fill="both", expand=True)
-            self.tree = ttk.Treeview(table, columns=("time", "zh", "why"),
-                                     show="headings", selectmode="browse", height=12)
-            for key, title, width in (("time", "时间", 80), ("zh", "中文（可能有错）", 300),
-                                      ("why", "为什么可疑", 540)):
-                self.tree.heading(key, text=title)
-                self.tree.column(key, width=width, minwidth=60,
-                                 stretch=(key != "time"), anchor="w")
-            bar = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
-            self.tree.configure(yscrollcommand=bar.set)
-            self.tree.pack(side="left", fill="both", expand=True)
-            bar.pack(side="right", fill="y")
-            for item in self.items:
-                self.tree.insert("", "end", iid=str(item["id"]),
-                                 values=(timestamp(item["start"]),
-                                         item.get("zh") or "",
-                                         item.get("why") or ""))
-            self.tree.bind("<Double-1>", self._jump)
-            self.tree.bind("<Return>", self._jump)
-            self.tree.bind("<<TreeviewSelect>>", self._show_detail)
-
-            # ---- 详情区：完整显示当前这一条的日文 / 中文 / 原因（不截断、自动换行）----
-            detail_box = tk.LabelFrame(self, text="这一条的完整内容", padx=8, pady=6)
-            detail_box.pack(fill="both", expand=False, pady=(10, 0))
-            self.detail = tk.Text(detail_box, height=7, wrap="word", relief="flat",
-                                  font=(FONT_FAMILY, 10), background="#F7F7F7")
-            self.detail.pack(fill="both", expand=True)
-            self.detail.configure(state="disabled")
-            self._show_detail()          # 一打开就显示第一条，不用先点
+            body = tk.Frame(self)
+            body.pack(fill="both", expand=True)
+            self.text = ScrolledText(body, wrap="word", font=(FONT_FAMILY, 10),
+                                     relief="solid", borderwidth=1, padx=10, pady=8)
+            self.text.pack(fill="both", expand=True)
+            self._fill(self.text)
+            self.text.configure(state="disabled")
+            self.text.tag_configure("head", font=(FONT_FAMILY, 10, "bold"))
+            self.text.tag_configure("why", foreground="#A33")
+            self.text.tag_configure("dim", foreground="#666666")
+            self.text.bind("<Double-1>", self._jump_from_text)
+            self.text.bind("<Return>", self._jump_from_text)
 
         btns = tk.Frame(self)
         btns.pack(fill="x", pady=(10, 0))
         ttk.Button(btns, text="关闭", command=self.destroy).pack(side="right")
         if on_rerun is not None:
             ttk.Button(btns, text="重新检查", command=self._rerun).pack(side="right", padx=8)
+        ttk.Label(btns, text="想改哪一条：双击跳过去，在校对页直接改中文，或点「这句识别错了」。",
+                  style="Muted.TLabel").pack(side="left")
 
-    def _selected_id(self):
-        sel = self.tree.selection() if hasattr(self, "tree") else ()
-        return int(sel[0]) if sel else None
-
-    def _show_detail(self, _event=None):
-        """把当前选中那一条**完整**显示出来（列表里放不下就靠这里看全）。"""
-        if not hasattr(self, "detail"):
-            return
-        cue_id = self._selected_id()
-        item = next((x for x in self.items if int(x["id"]) == cue_id), None)
-        if item is None and self.items:
-            item = self.items[0]
-        lines = []
-        if item is not None:
-            src = item.get("source") or item.get("ja") or ""
-            lines.append("日文：%s" % (src or "（没有原文）"))
-            lines.append("")
-            lines.append("中文：%s" % (item.get("zh") or "（空）"))
-            lines.append("")
-            lines.append("为什么可疑：%s" % (item.get("why") or ""))
+    def _fill(self, text):
+        """把每条写成一小段，**完整**写出来（不截断）。"""
+        for index, item in enumerate(self.items, 1):
+            tag = "cue-%d" % int(item["id"])
+            text.insert("end", "[%s] 第 %d 条" % (timestamp(item["start"]), int(item["id"])), ("head", tag))
+            text.insert("end", "\n")
+            text.insert("end", "    中文：%s" % (item.get("zh") or "（空）"), (tag,))
+            text.insert("end", "\n")
+            text.insert("end", "    为什么可疑：%s" % (item.get("why") or ""), ("why", tag))
+            text.insert("end", "\n")
+            source = item.get("source") or item.get("ja") or ""
+            if source:
+                text.insert("end", "    日文：%s" % source, ("dim", tag))
+                text.insert("end", "\n")
             if item.get("from"):
-                lines.append("")
-                lines.append("（这条是%s报的）" % item["from"])
-        self.detail.configure(state="normal")
-        self.detail.delete("1.0", "end")
-        self.detail.insert("1.0", "\n".join(lines))
-        self.detail.configure(state="disabled")
+                text.insert("end", "    （%s报的）" % item["from"], ("dim", tag))
+                text.insert("end", "\n")
+            text.insert("end", "\n")
 
-    def _jump(self, _event=None):
-        cue_id = self._selected_id()
-        if cue_id is not None:
-            self.on_jump(cue_id)
+    def _jump_from_text(self, _event=None):
+        """双击哪一条就跳到哪一条（靠行上的 tag 认）。"""
+        try:
+            index = self.text.index("@%d,%d" % (self.text.winfo_pointerx() - self.text.winfo_rootx(),
+                                                self.text.winfo_pointery() - self.text.winfo_rooty()))
+        except tk.TclError:
+            return
+        for name in self.text.tag_names(index):
+            if name.startswith("cue-"):
+                try:
+                    self.on_jump(int(name[4:]))
+                except (TypeError, ValueError):
+                    pass
+                return
 
     def _rerun(self):
         self.destroy()
