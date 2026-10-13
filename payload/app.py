@@ -267,6 +267,14 @@ class Application(tk.Tk):
                                    "在「诊断与资源」导出诊断包查看原因。")
 
     def save_settings(self):
+        """保存设置。顺带把密钥也存了。
+
+        为什么在这里存密钥（2026-10-13 真事）：密钥原来只在「开始任务」和「关软件」时
+        才写进 Windows 凭据管理器，于是使用者粘了密钥、点了「保存设置」，
+        以为已经存好了 —— 结果没存，重启又得粘一遍。
+        现在点保存就存；而且 persist_api_key 已经改成"框空着就不动"，不会误删。
+        """
+        self.persist_api_key()
         data = {"output": self.out_var.get(), "language": self.lang_var.get(),
                 "asr_model": self.asr_var.get(), "device": self.device_var.get(),
                 "local_model": self.local_model_var.get(), "model": self.model_var.get(),
