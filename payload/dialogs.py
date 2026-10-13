@@ -607,17 +607,20 @@ class ChineseCheckDialog(tk.Toplevel):
                      fg="#a33").pack(side="left")
 
         if not self.items:
-            ttk.Label(self, text="这句素材的中文没有看出问题 —— 可以直接导出。\n"
+            ttk.Label(self, text="这份素材的中文没有看出问题 —— 可以直接导出。\n"
                                  "（自检只找「会让剪辑剪错」的错：专名听错、意思反了、"
                                  "中文不成话、前后矛盾。措辞不同不算。）",
                       style="Muted.TLabel", justify="left").pack(anchor="w", pady=16)
         else:
+            # 列表只放摘要，**完整内容放到下面的详情区** ——
+            # 第一版把中文截成 60 字、原因截成 120 字，结果使用者抱怨"看不全"，
+            # 改这里别再截断内容，只控制列宽。
             table = tk.Frame(self)
             table.pack(fill="both", expand=True)
             self.tree = ttk.Treeview(table, columns=("time", "zh", "why"),
-                                     show="headings", selectmode="browse", height=18)
-            for key, title, width in (("time", "时间", 90), ("zh", "中文（可能有错）", 330),
-                                      ("why", "为什么可疑", 520)):
+                                     show="headings", selectmode="browse", height=12)
+            for key, title, width in (("time", "时间", 80), ("zh", "中文（可能有错）", 300),
+                                      ("why", "为什么可疑", 540)):
                 self.tree.heading(key, text=title)
                 self.tree.column(key, width=width, minwidth=60,
                                  stretch=(key != "time"), anchor="w")
@@ -628,10 +631,20 @@ class ChineseCheckDialog(tk.Toplevel):
             for item in self.items:
                 self.tree.insert("", "end", iid=str(item["id"]),
                                  values=(timestamp(item["start"]),
-                                         (item.get("zh") or "")[:60],
-                                         (item.get("why") or "")[:120]))
+                                         item.get("zh") or "",
+                                         item.get("why") or ""))
             self.tree.bind("<Double-1>", self._jump)
             self.tree.bind("<Return>", self._jump)
+            self.tree.bind("<<TreeviewSelect>>", self._show_detail)
+
+            # ---- 详情区：完整显示当前这一条的日文 / 中文 / 原因（不截断、自动换行）----
+            detail_box = tk.LabelFrame(self, text="这一条的完整内容", padx=8, pady=6)
+            detail_box.pack(fill="both", expand=False, pady=(10, 0))
+            self.detail = tk.Text(detail_box, height=7, wrap="word", relief="flat",
+                                  font=(FONT_FAMILY, 10), background="#F7F7F7")
+            self.detail.pack(fill="both", expand=True)
+            self.detail.configure(state="disabled")
+            self._show_detail()          # 一打开就显示第一条，不用先点
 
         btns = tk.Frame(self)
         btns.pack(fill="x", pady=(10, 0))
@@ -642,6 +655,30 @@ class ChineseCheckDialog(tk.Toplevel):
     def _selected_id(self):
         sel = self.tree.selection() if hasattr(self, "tree") else ()
         return int(sel[0]) if sel else None
+
+    def _show_detail(self, _event=None):
+        """把当前选中那一条**完整**显示出来（列表里放不下就靠这里看全）。"""
+        if not hasattr(self, "detail"):
+            return
+        cue_id = self._selected_id()
+        item = next((x for x in self.items if int(x["id"]) == cue_id), None)
+        if item is None and self.items:
+            item = self.items[0]
+        lines = []
+        if item is not None:
+            src = item.get("source") or item.get("ja") or ""
+            lines.append("日文：%s" % (src or "（没有原文）"))
+            lines.append("")
+            lines.append("中文：%s" % (item.get("zh") or "（空）"))
+            lines.append("")
+            lines.append("为什么可疑：%s" % (item.get("why") or ""))
+            if item.get("from"):
+                lines.append("")
+                lines.append("（这条是%s报的）" % item["from"])
+        self.detail.configure(state="normal")
+        self.detail.delete("1.0", "end")
+        self.detail.insert("1.0", "\n".join(lines))
+        self.detail.configure(state="disabled")
 
     def _jump(self, _event=None):
         cue_id = self._selected_id()

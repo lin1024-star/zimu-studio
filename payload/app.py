@@ -1857,14 +1857,20 @@ class Application(tk.Tk):
         return max((float(c["end"]) for c in cues), default=None)
 
     def jump_to_cue(self, cue_id):
-        """跳到指定条目并选中，让体检结果能一条条看过去。"""
+        """跳到指定条目并选中，让体检 / 自检结果能一条条看过去。
+
+        2026-10-14 修：这里原来调的是 `self.show_selected()` —— **那个方法根本不存在**，
+        所以「双击跳到那一条」从来没成功过（时间轴体检、待确认、中文自检都受影响）。
+        因为只有真去双击才会炸，单元测试和冒烟都测不到；是使用者双击自检结果时才暴露的。
+        现在改调已有的 select_cue()（它会选中、并把原文/中文/时间填进编辑器）。
+        """
         ident = str(cue_id)
         if not self.tree.exists(ident):
             return
         self.tree.selection_set(ident)
         self.tree.focus(ident)
         self.tree.see(ident)
-        self.show_selected()
+        self.select_cue()
 
     def fix_timeline(self, issues):
         """一键修安全的项：时间倒着走、叠字、间隙过小。改前自动备份。"""
