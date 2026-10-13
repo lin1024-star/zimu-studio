@@ -28,7 +28,8 @@ from core import (APP_VERSION, DEFAULT_MODEL, GLOSSARY_LIMIT, Cue, DeepSeekClien
 from diagnostics import PHASES, Diagnostics, error_info
 from dialogs import (AddCueDialog, AssStyleDialog, ChineseCheckDialog, DurationDialog,
                      ExportDialog, JaFixConfirmDialog,
-                     JaIssueDialog, OffsetDialog, SrtImportDialog, TimelineQcDialog)
+                     JaIssueDialog, OffsetDialog, RuleScopeDialog, SrtImportDialog,
+                     TimelineQcDialog)
 from paths import data_root
 import chinese_check
 import ja_fix
@@ -1025,36 +1026,60 @@ class Application(tk.Tk):
                     self.save_issue(row, name, note)
                 return
             self.log(f"他说了算：按 {fix['wrong']} = {fix['right']} 写进纠正表。")
-        self.write_rule(row, fix, box["zh"], note)
+        # 先问范围再写：只对这一期（默认）/ 所有视频 / 先不改
+        scope_dialog = RuleScopeDialog(self, fix["wrong"], fix["right"],
+                                       row.get("source") or "")
+        self.wait_window(scope_dialog)
+        if scope_dialog.result is None:
+            self.log("他没选范围，这条先记下来，没有动纠正表。")
+            self.save_issue(row, name, note)
+            return
+        self.write_rule(row, fix, box["zh"], note, scope=scope_dialog.result)
 
-    def write_rule(self, row, fix, trial_zh, note):
-        """把规则写进纠正表，并立刻套到当前项目上。"""
-        state = ja_fix.append_rule(fix["wrong"], fix["right"], note)
+    def write_rule(self, row, fix, trial_zh, note, scope="local"):
+        """把规则写下来，并立刻套到当前项目上。
+
+        scope = "local"：写进**这个项目**（只对这一期生效，换别的视频不受影响）—— 默认
+        scope = "global"：写进数据根目录的「日文纠正表.txt」，以后每一期都套用
+        """
+        state = "new"
+        if scope == "local":
+            state = ja_fix.add_project_rule(self.project, fix["wrong"], fix["right"], note)
+            if state in ("new", "exists"):
+                if self.project_path:
+                    core.save_project(self.project_path, self.project)
+        else:
+            state = ja_fix.append_rule(fix["wrong"], fix["right"], note)
         if state == "conflict":
-            messagebox.showwarning("纠正表里有冲突",
-                                   f"表里已经有「{fix['wrong']} = 别的写法」，没有覆盖它。\n\n"
-                                   f"这次的改法是：{fix['wrong']} = {fix['right']}\n"
-                                   "想改的话，请手动编辑 D:\\字幕工坊\\日文纠正表.txt。")
+            where = "这个项目里" if scope == "local" else "纠正表里"
+            messagebox.showwarning("已经有别的改法",
+                                   f"{where}已经有「{fix['wrong']} = 别的写法」，没有覆盖它。\n\n"
+                                   f"这次的改法是：{fix['wrong']} = {fix['right']}")
             return
         if state == "error":
-            self.log("写纠正表失败（可能没有写入权限），改为记下来。")
+            self.log("没能写下来（可能文件不可写），改为把这句记进待处理。")
             self.save_issue(row, "", note)
             return
         changed = self.apply_rule_now(fix["wrong"], fix["right"])
         if state == "exists":
-            self.log(f"纠正表里本来就有「{fix['wrong']} = {fix['right']}」，这次只把项目里剩下的改成一致。")
+            self.log(f"本来就有「{fix['wrong']} = {fix['right']}」，这次只把项目里剩下的改成一致。")
+        elif scope == "local":
+            self.log(f"已写进**这一期**的规则：{fix['wrong']} = {fix['right']}（别的视频不受影响）")
         else:
-            self.log(f"已写进纠正表：{fix['wrong']} = {fix['right']}（{fix['why'][:60]}）")
+            self.log(f"已写进全局纠正表：{fix['wrong']} = {fix['right']}（以后每一期都套用）")
         # 中文也要跟着变 —— 否则他看到的中文还是旧的（纠正表只改日文原文）
         redone = self.retranslate_cues(set(changed) | {row["id"]})
         messagebox.showinfo(
             "改好了",
             f"这句的原句：{row.get('source') or ''}\n"
             f"改对之后：{fix['fixed']}\n"
-            f"试翻结果：{trial_zh}\n\n"
-            f"已经写进纠正表（{fix['wrong']} = {fix['right']}）。\n"
-            f"本片改了 {len(changed)} 条原文，中文重翻了 {redone} 条。\n"
-            "以后所有视频遇到同一个错，都会自动改对。")
+            f"试翻结果：trial_zh\n\n"
+            f"这条改法：{fix['wrong']} = {fix['right']}\n"
+            + ("**只用在这一期**（存在这个项目里，跟着这段素材走；别的视频不受影响）。\n"
+               if scope == "local" else
+               "**所有视频都套用**（写进了日文纠正表；以后哪一期真的说了「%s」，也会被改掉）。\n"
+               % fix["wrong"]) +
+            f"本片改了 {len(changed)} 条原文，中文重翻了 {redone} 条。")
 
     def retranslate_cues(self, ids):
         """把指定条目的中文重新翻一遍。
@@ -1491,7 +1516,9 @@ class Application(tk.Tk):
                   "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": self.force_var.get(), "mode": effective_mode,
                   "ass_style_file": self.ass_style_var.get().strip() or None, "ass_style_name": self.ass_style_name_var.get(),
                   "tidy_axis": bool(self.tidy_var.get()),
-                "separate_vocals": bool(self.separate_var.get())}
+                "separate_vocals": bool(self.separate_var.get()),
+                # 只对本片生效的纠正规则（存在项目里，跟着这段素材走）
+                "ja_fix_local": ja_fix.project_rules(self.project)}
         self.diagnostics.start_task(config)
         self.launch_job(config)
         self.force_var.set(False)
@@ -1529,7 +1556,8 @@ class Application(tk.Tk):
                       "device": "cpu" if self.device_var.get().startswith("CPU") else "cuda", "model_dir": str(USER_DIR / "models"),
                       "api_key": self.api_key_var.get(), "model": self.model_var.get().strip(),
                       "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": False, "mode": "translate",
-                      "separate_vocals": bool(self.separate_var.get())}
+                      "separate_vocals": bool(self.separate_var.get()),
+                      "ja_fix_local": ja_fix.project_rules(self.project)}
             self.diagnostics.start_task(config)
             self.launch_job(config)
         except (UserError, OSError) as exc:

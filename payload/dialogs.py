@@ -567,6 +567,62 @@ class TimelineQcDialog(tk.Toplevel):
             self.destroy()
 
 
+class RuleScopeDialog(tk.Toplevel):
+    """这条改法用在哪些视频：只对这一期（默认）/ 所有视频 / 先不改。
+
+    为什么必须问（2026-10-14 使用者发现的问题）：
+    纠正表原来是全局一张，所有视频都套用。可"识别听错"多半是这一期的事，
+    而**错的写法在别的视频里可能是正常内容** ✗
+    例：这一期把「多すぎ」听成「大杉」→ 写进全局表；
+        下一期真有个说话对象叫「大杉」（真实姓氏）→ 会被静默改成「多すぎ」，
+        中文跟着错，而他看不出来。
+    所以默认「只对这一期」，并且把风险直接写在选项旁边。
+    """
+
+    def __init__(self, parent, wrong, right, sample=""):
+        super().__init__(parent)
+        self.result = None
+        self.title("这条改法用在哪些视频")
+        self.configure(padx=14, pady=12)
+        self.transient(parent)
+        self.resizable(False, False)
+
+        tk.Label(self, text=f"改法：{wrong}  →  {right}",
+                 font=(FONT_FAMILY, 11, "bold")).pack(anchor="w")
+        if sample:
+            tk.Label(self, text=f"这一句：{sample[:70]}", fg="#555555").pack(anchor="w", pady=(3, 0))
+
+        self.scope = tk.StringVar(value="local")
+        box = tk.Frame(self)
+        box.pack(fill="x", pady=(10, 4))
+        tk.Radiobutton(box, text="只对这一期（推荐）", variable=self.scope, value="local",
+                       font=(FONT_FAMILY, 10, "bold")).pack(anchor="w")
+        tk.Label(box, text="　　存在这个项目里，跟着这段素材走；换别的视频不受影响。",
+                 fg="#1a6b1a").pack(anchor="w")
+        tk.Radiobutton(box, text="所有视频都用", variable=self.scope, value="global",
+                       font=(FONT_FAMILY, 10)).pack(anchor="w", pady=(8, 0))
+        tk.Label(box, text=("　　写进数据根目录的「日文纠正表.txt」，以后每一期都套用。\n"
+                            f"　　⚠ 如果别的视频里真的说了「{wrong}」（是正常内容），\n"
+                            "　　　 也会被改成上面那个写法，而你看不出来。"),
+                 fg="#a33", justify="left").pack(anchor="w")
+
+        btns = tk.Frame(self)
+        btns.pack(fill="x", pady=(12, 0))
+        ttk.Button(btns, text="先不改", command=self._cancel).pack(side="right")
+        ttk.Button(btns, text="确定", command=self._ok).pack(side="right", padx=8)
+        self.bind("<Return>", lambda _e: self._ok())
+        self.bind("<Escape>", lambda _e: self._cancel())
+        self.grab_set()
+
+    def _ok(self):
+        self.result = self.scope.get()
+        self.destroy()
+
+    def _cancel(self):
+        self.result = None
+        self.destroy()
+
+
 class ChineseCheckDialog(tk.Toplevel):
     """中文自检结果：把每一条可疑的**完整内容**列出来，双击跳到那一条。
 

@@ -137,6 +137,111 @@ def _compile(table):
     return re.compile("|".join(re.escape(wrong) for wrong, _ in table))
 
 
+# ---------------------------------------------------------------------------
+# 只对本片生效的规则
+#
+# 为什么要有（2026-10-14 使用者发现的问题）：
+# 纠正表原来是**全局一张**，所有视频都套用 —— 可是"识别听错"多半是**这一期**的事，
+# 而错的写法**在别的视频里可能是正常内容** ✗
+# 例：这一期把「多すぎ」听成「大杉」→ 写进全局表；
+#     下一期真有个说话对象叫「大杉」（真实姓氏）→ 会被**静默改成「多すぎ」**，
+#     中文跟着错，而他看不出来。
+# 所以「这句识别错了」默认写成**本片规则**（存在项目里，跟着项目走），
+# 只有他明确选「所有视频都用」时才写全局表。
+# ---------------------------------------------------------------------------
+
+LOCAL_KEY = "ja_fix_local"
+
+
+def project_rules(project):
+    """取出项目里存的「只对本片生效」的规则 → [(错的, 对的), ...]。
+
+    项目文件可能被手工改过，所以这里不信任内容：认不出来的条目直接跳过。
+    """
+    pairs = []
+    for row in ((project or {}).get(LOCAL_KEY) or []):
+        if isinstance(row, dict):
+            wrong = str(row.get("wrong") or "").strip()
+            right = str(row.get("right") or "").strip()
+        elif isinstance(row, (list, tuple)) and len(row) >= 2:
+            wrong, right = str(row[0]).strip(), str(row[1]).strip()
+        else:
+            continue
+        if wrong and right and wrong != right:
+            pairs.append((wrong, right))
+    return pairs
+
+
+def merged_table(project=None, root=None, rules=None):
+    """全局表 + 本片规则，长的优先。
+
+    **本片规则优先**：同一个错词，项目里写过的以项目为准 —— 那是他针对这一期定的。
+
+    rules: 额外的本片规则（走识别流程时项目还没建，界面通过任务配置传进来）；
+           和 project 里存的会合并，重复的以 rules 为先。
+    """
+    pairs = list(rules) if rules is not None else []
+    seen = set()
+    for wrong, right in pairs:
+        seen.add(wrong)
+    for wrong, right in project_rules(project):
+        if wrong not in seen:
+            pairs.append((wrong, right))
+            seen.add(wrong)
+    for wrong, right in load_table(root):
+        if wrong not in seen:
+            pairs.append((wrong, right))
+            seen.add(wrong)
+    pairs.sort(key=lambda pair: (-len(pair[0]), pair[0]))
+    return pairs
+
+
+def add_project_rule(project, wrong, right, note="", when=None):
+    """往项目里加一条「只对本片生效」的规则。返回 new / exists / conflict / error。
+
+    判定跟 append_rule 一致：同一个错词已经映射到别的写法时返回 conflict，**不覆盖**。
+    调用方负责保存项目（core.save_project）。
+    """
+    if project is None:
+        return "error"
+    wrong, right = (wrong or "").strip(), (right or "").strip()
+    if not wrong or not right or wrong == right or "=" in wrong or "=" in right:
+        return "error"
+    if "\n" in wrong or "\n" in right:
+        return "error"
+    rows = project.setdefault(LOCAL_KEY, [])
+    if not isinstance(rows, list):
+        rows = project[LOCAL_KEY] = []
+    for row in rows:
+        if isinstance(row, dict) and str(row.get("wrong") or "").strip() == wrong:
+            return "exists" if str(row.get("right") or "").strip() == right else "conflict"
+    rows.append({"wrong": wrong, "right": right,
+                 "note": (note or "").strip()[:200],
+                 "at": when or datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    return "new"
+
+
+def remove_project_rule(project, wrong):
+    """撤掉一条本片规则（写错了想退回来）。返回是否真删掉了。"""
+    rows = (project or {}).get(LOCAL_KEY)
+    if not isinstance(rows, list):
+        return False
+    target = (wrong or "").strip()
+
+    def entry_wrong(row):
+        if isinstance(row, dict):
+            return str(row.get("wrong") or "").strip()
+        if isinstance(row, (list, tuple)) and row:
+            return str(row[0]).strip()
+        return ""
+
+    kept = [row for row in rows if entry_wrong(row) != target]
+    if len(kept) == len(rows):
+        return False
+    project[LOCAL_KEY] = kept
+    return True
+
+
 def apply_text(text, table):
     """按表替换一段文字，返回 (新文字, [(错的, 对的, 次数), ...])。
 

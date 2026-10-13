@@ -1751,8 +1751,9 @@ def translate_project(path, project, key, model, glossary, stop, emit, force=Fal
     cues = [Cue(**r) for r in project["cues"]]
     # 翻译之前先按「日文纠正表」把听错的词改对（老项目也走这里，不用重跑识别）。
     # 只改日文原文：中文、时间轴、编号一个字都不动；表不存在就什么都不做。
+    # 表 = 全局表 + **本片规则**（存在项目里，只对这一期生效，见 ja_fix 里的说明）。
     import ja_fix
-    cues, fix_report = ja_fix.fix_cues(cues)
+    cues, fix_report = ja_fix.fix_cues(cues, table=ja_fix.merged_table(project))
     for line in ja_fix.report_lines(fix_report):
         emit("log", line)
     profile = {"model": model, "glossary": glossary, "prompt_version": PROMPT_VERSION}
@@ -2061,8 +2062,10 @@ def run_job(config, stop, emit):
             # 识别听错的日文词，在这里按「日文纠正表」改对（在整理轴与翻译之前）。
             # 只改原文；用户自己导入的 SRT 原样保留，不擅自改动。
             # 表不存在就什么都不做（不往数据目录里塞文件）。
+            # 「本片规则」由界面通过 config 带进来（这时项目还没建，读不到项目里的）。
             import ja_fix
-            cues, fix_report = ja_fix.fix_cues(cues)
+            cues, fix_report = ja_fix.fix_cues(
+                cues, table=ja_fix.merged_table(rules=config.get("ja_fix_local")))
             for line in ja_fix.report_lines(fix_report):
                 emit("log", line)
         raw = list(cues)
