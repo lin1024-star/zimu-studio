@@ -2,7 +2,7 @@
 """中文自检模块的测试。
 
 重点是那条**本地规则**：它必须只抓"识别乱码造成的字符堆叠"，
-绝不能误伤台词里正常的复读（朗读剧那期台词全是「エマエマエマ…」）。
+绝不能误伤台词里正常的复读（某段素材那期台词全是「リナリナリナ…」）。
 这条规则是拿真实素材调出来的，所以测试里把那 12 个用例钉死。
 """
 import sys
@@ -22,15 +22,15 @@ class StackedRunTest(unittest.TestCase):
     """本地规则：同一字符连续 ≥4 次、且不是常见语气字 → 报。"""
 
     def test_should_not_fire_on_normal_repetition(self):
-        """正常复读不报 —— 朗读剧台词里全是这种，误伤了就没法用。"""
-        for text in ("艾玛艾玛艾玛艾玛艾玛", "艾玛艾玛艾玛艾玛艾玛艾玛艾玛",
+        """正常复读不报 —— 某段素材台词里全是这种，误伤了就没法用。"""
+        for text in ("莉娜莉娜莉娜莉娜莉娜", "莉娜莉娜莉娜莉娜莉娜莉娜莉娜",
                      "喜欢喜欢喜欢喜欢", "真的真的真的真的",
                      "哈哈哈哈哈哈", "啊啊啊啊啊", "嗯嗯嗯嗯嗯", "呜呜呜呜呜呜",
                      "对 对 对 对", "啊啊啊啊啊的呢"):
             self.assertIsNone(cc.stacked_run(text), f"不该报：{text}")
 
     def test_should_fire_on_garbled_stacking(self):
-        """识别乱码的形态要报（真事：マエマエマエ → 前前前前前前）。"""
+        """识别乱码的形态要报（真事：マリナリナエ → 前前前前前前）。"""
         self.assertEqual(cc.stacked_run("前前前前前前前前"), "前前前前前前前前")
 
     def test_fires_on_the_first_offending_run(self):
@@ -48,8 +48,8 @@ class StackedRunTest(unittest.TestCase):
 class LocalFlagsTest(unittest.TestCase):
 
     def test_only_flags_the_garbled_one(self):
-        cues = [cue(1, "エマエマエマ", "艾玛艾玛艾玛艾玛", 0.0),
-                cue(2, "マエマエマエ", "前前前前前前", 2.0),
+        cues = [cue(1, "リナリナリナ", "莉娜莉娜莉娜莉娜", 0.0),
+                cue(2, "マリナリナエ", "前前前前前前", 2.0),
                 cue(3, "ありがとう", "谢谢", 4.0)]
         found = cc.local_flags(cues)
         self.assertEqual([f["id"] for f in found], [2])
@@ -106,8 +106,8 @@ class MergeTest(unittest.TestCase):
 class PromptTest(unittest.TestCase):
 
     def test_prompt_carries_the_judging_rules(self):
-        text = cc.system_prompt("ゆか = 优花")
-        self.assertIn("ゆか = 优花", text)                  # 术语表进去了
+        text = cc.system_prompt("さくら = 樱")
+        self.assertIn("さくら = 樱", text)                  # 术语表进去了
         self.assertIn("术语表为准", text)                  # 不许说术语表里的人名错
         self.assertIn("每批最多报", text)
         self.assertIn("不要报", text)

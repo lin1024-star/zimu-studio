@@ -672,14 +672,14 @@ class GlossaryTests(unittest.TestCase):
         def transport(body):
             captured["body"] = body
             return {"choices": [{"finish_reason": "stop",
-                                 "message": {"content": json.dumps({"translations": [{"id": 1, "text": "优花亲你好"}]})}}],
+                                 "message": {"content": json.dumps({"translations": [{"id": 1, "text": "樱亲你好"}]})}}],
                     "usage": {}}
         client = DeepSeekClient("sk-test", transport=transport)
-        client.translate([Cue(1, 0.0, 1.0, "こんゆかし")], "ja", "", glossary)
+        client.translate([Cue(1, 0.0, 1.0, "こんさくらし")], "ja", "", glossary)
         return json.loads(captured["body"]["messages"][1]["content"])
 
     def test_glossary_travels_with_every_request(self):
-        glossary = "ゆか = 优花\nこんゆかし = 「优花亲你好」"
+        glossary = "さくら = 樱\nこんさくらし = 「樱亲你好」"
         self.assertEqual(self.payload_for(glossary)["glossary"], glossary)
 
     def test_empty_glossary_is_fine(self):

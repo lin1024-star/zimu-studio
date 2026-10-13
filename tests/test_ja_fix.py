@@ -20,7 +20,7 @@ import core
 import ja_fix
 from core import Cue
 
-# 真实素材里出现过的 5 种错法（SURGECITY 日语直播，原音都是 おしょく）
+# 真实素材里出现过的 5 种错法（测试素材 日语直播，原音都是 おしょく）
 REAL_TABLE = [
     ("お食系官", "汚職警官"),
     ("お食系感", "汚職警官"),
@@ -372,7 +372,7 @@ class IssueRecordTest(unittest.TestCase):
 
     def test_record_writes_a_readable_block(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path, block, status = ja_fix.record_issue("SURGECITY", self.cue(), "应该是贪污", root=tmp)
+            path, block, status = ja_fix.record_issue("测试素材", self.cue(), "应该是贪污", root=tmp)
             self.assertEqual(status, "new")
             text = Path(path).read_text(encoding="utf-8")
         self.assertIn("日文原文：お食警官だから", text)
@@ -380,7 +380,7 @@ class IssueRecordTest(unittest.TestCase):
         self.assertIn("他觉得不对的地方：应该是贪污", text)
         self.assertIn("第 1070 条", text)
         self.assertIn("49:33.93", text)              # 2973.93 秒 → 49 分 33.93 秒
-        self.assertIn("SURGECITY", text)
+        self.assertIn("测试素材", text)
 
     def test_over_an_hour_gets_the_hour_field(self):
         block = ja_fix.format_issue("x", self.cue(start=3900.0, end=3901.5), when="2026-10-12 23:00")
