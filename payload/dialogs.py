@@ -588,7 +588,8 @@ class ChineseCheckDialog(tk.Toplevel):
         self.items = list(items or [])
         self.title("中文自检 · 可能翻错的地方")
         self.configure(padx=12, pady=10)
-        self.transient(parent)
+        # 故意**不做成 transient**：他要一边看清单一边改，窗口不能老压在主界面上
+        # （transient 会让它始终浮在主窗口之上 —— 那样双击跳转就又"看不见"了）
         self.geometry("1060x720")
         self.minsize(760, 420)
 
@@ -605,11 +606,16 @@ class ChineseCheckDialog(tk.Toplevel):
             text = "没有发现可疑的地方"
         tk.Label(head, text=text, font=(FONT_FAMILY, 11, "bold")).pack(side="left")
         if self.items:
-            tk.Label(head, text="　（双击任意一条可以跳到那一条；内容都完整写出来了，看不全就往下滚）",
+            tk.Label(head, text="　（双击任意一条跳到它；窗口留着，跳过的会标 ✔）",
                      fg="#666666").pack(side="left")
         if failed:
             tk.Label(head, text="　⚠ %d 批没跑成，结果不完整" % failed,
                      fg="#a33").pack(side="left")
+
+        # 状态行：跳转之后在这里写明跳到了哪一条（他要的"反馈"）
+        self.status = tk.Label(self, text="双击下面任意一条 → 主窗口会选中它，回来这里继续看下一条。",
+                               fg="#1a6b1a", anchor="w")
+        self.status.pack(fill="x", pady=(0, 6))
 
         if not self.items:
             ttk.Label(self, text="这份素材的中文没有看出问题 —— 可以直接导出。\n"
@@ -627,6 +633,7 @@ class ChineseCheckDialog(tk.Toplevel):
             self.text.tag_configure("head", font=(FONT_FAMILY, 10, "bold"))
             self.text.tag_configure("why", foreground="#A33")
             self.text.tag_configure("dim", foreground="#666666")
+            self.text.tag_configure("visited", background="#EAF7EA")     # 跳过的条目淡绿底
             self.text.bind("<Double-1>", self._jump_from_text)
             self.text.bind("<Return>", self._jump_from_text)
 
@@ -635,7 +642,7 @@ class ChineseCheckDialog(tk.Toplevel):
         ttk.Button(btns, text="关闭", command=self.destroy).pack(side="right")
         if on_rerun is not None:
             ttk.Button(btns, text="重新检查", command=self._rerun).pack(side="right", padx=8)
-        ttk.Label(btns, text="双击某一条就跳到它，这个窗口会自动关掉；改法在校对页（直接改中文，或点「这句识别错了」）。",
+        ttk.Label(btns, text="双击某一条 → 主窗口选中它（这个窗口留着，跳过的标 ✔）；改法在校对页。",
                   style="Muted.TLabel").pack(side="left")
 
     def _fill(self, text):
@@ -667,23 +674,50 @@ class ChineseCheckDialog(tk.Toplevel):
         self.jump_to_index(index)
 
     def jump_to_index(self, index):
-        """按文本位置跳转：跳过去 + **关掉自己**。
+        """按文本位置跳转：跳过去，**窗口留着**，并在窗口里写明跳到了哪一条。
 
-        为什么关掉（2026-10-14 使用者反馈"双击之后没有反馈"）：
-        跳转发生在主窗口，可这个窗口挡在上面 —— 他看不见主窗口里选中的那一行，
-        感觉就像什么都没发生。所以双击 = 跳过去 + 关掉自己，直接落在那一行上改。
+        为什么不能关掉（2026-10-14 使用者反馈）：
+        第一版跳转发生在弹窗背后 → 他说"没有反馈"；我改成"跳完自动关窗" → 他说
+        "你关了他干什么啊" —— 因为他要的是**一条条过下去**，关了他就得重新点开、还得重新找位置。
+        所以现在是：跳过去 + 窗口留着 + 跳过的条目在清单里标出来（✔）+ 顶上有状态行。
         （拆成单独方法是为了能测：不用真去点鼠标。）
         """
         for name in self.text.tag_names(index):
-            if name.startswith("cue-"):
-                try:
-                    cue_id = int(name[4:])
-                except (TypeError, ValueError):
-                    return False
-                self.on_jump(cue_id)
-                self.destroy()
-                return True
+            if not name.startswith("cue-"):
+                continue
+            try:
+                cue_id = int(name[4:])
+            except (TypeError, ValueError):
+                return False
+            self.on_jump(cue_id)
+            self._mark_visited(cue_id)
+            if hasattr(self, "status"):
+                self.status.configure(
+                    text="✔ 已跳到第 %d 条（主窗口已经选中它，可以直接改；这条在下面标了 ✔）" % cue_id)
+            return True
         return False
+
+    def _mark_visited(self, cue_id):
+        """在清单里给跳过的条目加个 ✔，让他知道哪些已经看过了。
+
+        注意：文本框是 disabled 的，**直接 insert 会被 Tk 静默忽略** ✗
+        （实测：跳完标不上 ✔，查了一圈才发现是这个原因）—— 所以临时放开再插。
+        """
+        tag = "cue-%d" % cue_id
+        ranges = self.text.tag_ranges(tag)
+        if not ranges:
+            return
+        start, end = ranges[0], ranges[-1]
+        was_disabled = str(self.text.cget("state")) == "disabled"
+        if was_disabled:
+            self.text.configure(state="normal")
+        try:
+            if self.text.get(start, "%s+1c" % start) != "✔":
+                self.text.insert(start, "✔", ("visited", tag))
+            self.text.tag_add("visited", start, end)
+        finally:
+            if was_disabled:
+                self.text.configure(state="disabled")
 
     def _rerun(self):
         self.destroy()
