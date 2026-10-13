@@ -635,7 +635,7 @@ class ChineseCheckDialog(tk.Toplevel):
         ttk.Button(btns, text="关闭", command=self.destroy).pack(side="right")
         if on_rerun is not None:
             ttk.Button(btns, text="重新检查", command=self._rerun).pack(side="right", padx=8)
-        ttk.Label(btns, text="想改哪一条：双击跳过去，在校对页直接改中文，或点「这句识别错了」。",
+        ttk.Label(btns, text="双击某一条就跳到它，这个窗口会自动关掉；改法在校对页（直接改中文，或点「这句识别错了」）。",
                   style="Muted.TLabel").pack(side="left")
 
     def _fill(self, text):
@@ -664,13 +664,26 @@ class ChineseCheckDialog(tk.Toplevel):
                                                 self.text.winfo_pointery() - self.text.winfo_rooty()))
         except tk.TclError:
             return
+        self.jump_to_index(index)
+
+    def jump_to_index(self, index):
+        """按文本位置跳转：跳过去 + **关掉自己**。
+
+        为什么关掉（2026-10-14 使用者反馈"双击之后没有反馈"）：
+        跳转发生在主窗口，可这个窗口挡在上面 —— 他看不见主窗口里选中的那一行，
+        感觉就像什么都没发生。所以双击 = 跳过去 + 关掉自己，直接落在那一行上改。
+        （拆成单独方法是为了能测：不用真去点鼠标。）
+        """
         for name in self.text.tag_names(index):
             if name.startswith("cue-"):
                 try:
-                    self.on_jump(int(name[4:]))
+                    cue_id = int(name[4:])
                 except (TypeError, ValueError):
-                    pass
-                return
+                    return False
+                self.on_jump(cue_id)
+                self.destroy()
+                return True
+        return False
 
     def _rerun(self):
         self.destroy()
