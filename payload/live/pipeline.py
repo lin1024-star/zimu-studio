@@ -15,7 +15,22 @@ from pathlib import Path
 
 import numpy as np
 
+
+def _is_cjk_language(code):
+    """这个语言的书写是不是不分词（中日文）→ 拼句子时**不加空格**。
+
+    英语这类必须加空格，否则出来是「Helloeveryone」✗（2026-10-14 实测）。
+    """
+    return (code or "ja").strip().lower()[:2] in ("ja", "zh", "ko", "yue")
+
+
 DEFAULTS = {
+    # 识别语言。**2026-10-14 之前这里是写死的 "ja"** ✗ ——
+    # 结果英文素材的实时字幕根本用不了。现在由界面上选（日语 / 英语），
+    # 默认仍是日语，所以老用法的行为一个字没变 ✓
+    # 这一路**不提供「自动识别」**：每 2 秒一个窗口各自判语言会来回跳 ✗
+    # （批量任务里可以用自动识别 —— 那是整段一起判，稳）
+    "language": "ja",
     # 窗口：每次看最近多少秒。
     # 2026-10-14 实测（同一段 60 秒素材、真实识别线程 + 真实速度回放、只改这一个值）：
     #   · 每步耗时：20s→1.38s，12s→1.07s（省 22%），8s→0.96s，6s→0.84s
@@ -61,13 +76,20 @@ class SentenceAssembler:
         self.last_feed_wall = 0.0
         self.sentence_id = 0          # 每句一个号，界面靠它把「半句」和「整句」认成同一行
         self.partial_sent = False     # 这一句的半成品已经发过了吗
+        # 拼接词之间要不要空格：中日文不加；英语这类**必须加** ——
+        # 2026-10-14 实测：写死不加空格时，英文素材出来是
+        # 「Helloeveryone,welcomebacktothestream」✗ 中文翻译也跟着受影响
+        self.sep = "" if _is_cjk_language(cfg.get("language")) else " "
+
+    def _join(self, words):
+        return self.sep.join(w[2] for w in words)
 
     def feed(self, new_words):
         for w in new_words:
             if self.words:
                 prev = self.words[-1]
                 gap = w[0] - prev[1]
-                text = "".join(x[2] for x in self.words)
+                text = self._join(self.words)
                 if gap > self.cfg["gap"] or len(text) >= self.cfg["maxchars"]:
                     self.flush()
             self.words.append(w)
@@ -84,7 +106,7 @@ class SentenceAssembler:
         """
         if self.partial_sent or not self.words:
             return
-        text = "".join(w[2] for w in self.words).strip()
+        text = self._join(self.words).strip()
         if len(text) < self.cfg["partial_chars"]:
             return
         self.partial_sent = True
@@ -112,7 +134,7 @@ class SentenceAssembler:
     def flush(self):
         if not self.words:
             return
-        text = "".join(w[2] for w in self.words).strip()
+        text = self._join(self.words).strip()
         if text:
             self.on_sentence({"id": self.sentence_id, "partial": False,
                               "start": self.words[0][0], "end": self.words[-1][1], "ja": text})
@@ -192,8 +214,10 @@ class LiveTranscriber(threading.Thread):
             f.setsampwidth(2)
             f.setframerate(16000)
             f.writeframes((np.clip(data, -1, 1) * 32767).astype(np.int16).tobytes())
+        # 语言从 cfg 拿（界面上选）；没给就退回日语（老行为 ✓）
         segments, _info = self.model.transcribe(
-            str(self.tmp), language="ja", task="transcribe", **self.options)
+            str(self.tmp), language=self.cfg.get("language") or "ja",
+            task="transcribe", **self.options)
         out = []
         for s in segments:
             for w in (s.words or []):

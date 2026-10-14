@@ -38,6 +38,7 @@ from live.capture import (AudioRing, DEFAULT_SOURCE, FileAudioSource, SystemAudi
                           list_sources, source_label)  # noqa: E402
 from live.overlay import Overlay  # noqa: E402
 from live.pipeline import DEFAULTS, LiveTranscriber, Translator  # noqa: E402
+from core import LANGUAGES  # noqa: E402
 
 FLASH_MODEL = "deepseek-flash"
 
@@ -132,7 +133,7 @@ def log(msg):
 
 class LiveApp:
     def __init__(self, use_device=True, file_path=None, verbose=False, master=None,
-                 visible=True):
+                 visible=True, language=None):
         self.use_device = use_device
         self.file_path = file_path
         self.verbose = verbose
@@ -140,6 +141,8 @@ class LiveApp:
         self.master = master
         # visible=False 给自检用：建好但不显示，屏幕上不会闪出东西
         self.visible = visible
+        # 识别语言（"ja" / "en"）—— 2026-10-14 之前这里写死日语 ✗ 英文素材用不了
+        self.language = language or DEFAULTS["language"]
         self.out = queue.Queue()          # 工作线程 → 界面线程
         self.base_glossary = self._read_settings_glossary()
         self.glossary_lock = threading.Lock()
@@ -327,13 +330,17 @@ class LiveApp:
             log(f"术语表：{len(self.current_glossary())} 字")
             self.out.put(("status", f"正在加载识别模型…（音频来源：{self.capture.device}）"))
             self.out.put(("placeholder", "正在加载识别模型…（约 10 秒）"))
+            # 语言要带进去（以前写死日语 ✗，见 pipeline.DEFAULTS 里的说明）
+            live_cfg = dict(DEFAULTS)
+            live_cfg["language"] = self.language
             self.transcriber = LiveTranscriber(
-                self.ring, dict(DEFAULTS), on_sentence=self.translator.submit,
+                self.ring, live_cfg, on_sentence=self.translator.submit,
                 on_error=lambda e: (log(f"识别出错：{type(e).__name__}: {e}"),
                                     self.out.put(("warn", f"识别出错：{type(e).__name__}"))))
             self.transcriber.load()
             self.transcriber.start()
-            log(f"识别模型：{self.transcriber.model_name or '（未记录）'}")
+            log(f"识别模型：{self.transcriber.model_name or '（未记录）'}　"
+                f"语言：{LANGUAGES.get(self.language, self.language)}")
             if getattr(self.transcriber, "model_note", ""):
                 log(self.transcriber.model_note)
                 self.out.put(("warn", self.transcriber.model_note))

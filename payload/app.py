@@ -25,6 +25,11 @@ from core import (APP_VERSION, DEFAULT_MODEL, GLOSSARY_LIMIT, Cue, DeepSeekClien
                   MODEL_ORDER, MODEL_PROFILES, hardware_profile, model_pros_cons, model_table,
                   profile_text, recommend_model,
                   default_export_keys, default_export_selection, export_choices, should_alert)
+# ⚠ 这一行是必需的：下面有些地方写的是 `core.xxx`（模块式引用），
+# 而 `from core import ...` 只绑定了那些名字、**不绑定 core 这个模块名** ✗
+# 2026-10-14：就是因为缺这一行，7 处 `core.xxx` 全是 NameError ——
+# 其中「中文自检结果存进项目」那处被 try/except 吞掉了，于是**结果从来没存下来** ✗
+import core
 from diagnostics import PHASES, Diagnostics, error_info
 from dialogs import (AddCueDialog, AssStyleDialog, ChineseCheckDialog, DurationDialog,
                      ExportDialog, JaFixConfirmDialog,
@@ -284,6 +289,7 @@ class Application(tk.Tk):
                 "alert_when_done": bool(self.alert_var.get()),
                 "tidy_axis": bool(self.tidy_var.get()),
                 "chinese_check": bool(self.ccheck_var.get()),
+                "live_language": self.live_lang_var.get() if hasattr(self, "live_lang_var") else "日语",
                 "separate_vocals": bool(self.separate_var.get())}
         try:
             atomic_write(CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
@@ -380,7 +386,7 @@ class Application(tk.Tk):
         pick = ttk.Frame(files)
         pick.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(2, 0))
         ttk.Label(pick, text="原语言").pack(side="left")
-        combo = ttk.Combobox(pick, textvariable=self.lang_var, values=["自动识别", "英语", "日语"],
+        combo = ttk.Combobox(pick, textvariable=self.lang_var, values=list(core.UI_LANGUAGE_CHOICES),
                              state="readonly", width=10)
         combo.pack(side="left", padx=(8, 16))
         self.busy_controls.append(combo)
@@ -640,7 +646,7 @@ class Application(tk.Tk):
 
         ttk.Label(page, text="实时字幕（看直播用）", style="Title.TLabel").pack(anchor="w")
         ttk.Label(page, text="抓电脑正在播的声音 → 在本机识别 → 翻译 → 屏幕下方一条悬浮字幕。\n"
-                             "音频不出本机；只有识别出来的日文和中文会发给翻译接口（和普通任务一样）。",
+                             "音频不出本机；只有识别出来的原文和中文会发给翻译接口（和普通任务一样）。",
                   style="Muted.TLabel", justify="left").pack(anchor="w", pady=(4, 12))
 
         row = ttk.Frame(page)
@@ -649,6 +655,11 @@ class Application(tk.Tk):
         self.live_start_btn.pack(side="left")
         self.live_stop_btn = ttk.Button(row, text="停止", command=self.stop_live, state="disabled")
         self.live_stop_btn.pack(side="left", padx=8)
+        ttk.Label(row, text="　说的语言：").pack(side="left")
+        # 实时这一路**不给「自动识别」**：每 2 秒一个窗口各自判语言会来回跳 ✗
+        self.live_lang_var = tk.StringVar(value=self.settings.get("live_language", "日语"))
+        ttk.Combobox(row, textvariable=self.live_lang_var, values=["日语", "英语"],
+                     state="readonly", width=7).pack(side="left")
         ttk.Label(row, text="　识别模型：turbo（实时专用，自动挑最快能用的）",
                   style="Muted.TLabel").pack(side="left")
 
@@ -678,6 +689,13 @@ class Application(tk.Tk):
                   style="Muted.TLabel", justify="left").pack(anchor="w", pady=(6, 0))
         self.refresh_live()           # 每秒刷一次这一页（没启动时也刷，句数会跟着变 ✓）
 
+    def live_language_code(self):
+        """实时字幕页上选的语言 → 语言代码（日语 / 英语）。
+
+        选了认不出来的值就退回日语 —— 那是这一路一直以来的默认，行为不变 ✓
+        """
+        return core.language_code(self.live_lang_var.get()) or "ja"
+
     def start_live(self):
         """启动实时字幕（浮窗 + 采集 + 识别 + 翻译）。"""
         if getattr(self, "live", None) is not None and self.live.started_at:
@@ -691,9 +709,10 @@ class Application(tk.Tk):
                 # 懒导入：live 这一套导入时会改 sys.path、拉声音库，
                 # 不该在开软件的时候就做（用不到的人完全不受影响 ✓）
                 from live.app import LiveApp
-                self.live = LiveApp(master=self)
+                self.live = LiveApp(master=self, language=self.live_language_code())
             else:
                 self.live.reload_glossary()
+                self.live.language = self.live_language_code()
             self.live.start()
         except Exception as exc:          # noqa: BLE001
             self.log(f"实时字幕启动失败：{type(exc).__name__}: {exc}")
@@ -757,10 +776,20 @@ class Application(tk.Tk):
         for row in rows:                  # 半句与整句共用一个 id → 取最后一次（那就是整句）
             latest[row.get("id")] = row
         ordered = sorted(latest.values(), key=lambda r: r.get("start") or 0.0)
-        cues = [Cue(id=i, start=float(r.get("start") or 0.0), end=float(r.get("end") or 0.0),
-                    source=(r.get("ja") or "").strip(), zh=(r.get("zh") or "").strip())
-                for i, r in enumerate(ordered, 1)]
-        cues = [c for c in cues if c.source and c.zh]
+        cues = []
+        for index, r in enumerate(ordered, 1):
+            source = (r.get("ja") or "").strip()
+            zh = (r.get("zh") or "").strip()
+            if not source or not zh:
+                continue
+            start = float(r.get("start") or 0.0)
+            end = float(r.get("end") or 0.0)
+            # 实时这一路的时间轴来自逐词时间戳，偶尔会给出零长度/倒着的片段 ✗
+            # （2026-10-14 端到端实测撞到过：format_srt 会拒绝「结束不晚于开始」）
+            # 导出侧兜底：至少给 0.3 秒，保证字幕是能看的 ✓
+            if end <= start:
+                end = start + 0.3
+            cues.append(Cue(id=index, start=start, end=end, source=source, zh=zh))
         if not cues:
             messagebox.showinfo("还没有内容", "这一场还没有完整的中日对照，先启动听一会儿。")
             return
@@ -1026,7 +1055,7 @@ class Application(tk.Tk):
                 self.force_var.set(False)
                 self.source_var.set(self.project.get("input", ""))
                 lang = self.project.get("language")
-                self.lang_var.set({"en": "英语", "ja": "日语"}.get(lang, "自动识别"))
+                self.lang_var.set(core.language_name(lang))
                 profile = self.project.get("translation_profile", {})
                 if profile:
                     self.model_var.set(profile.get("model", DEFAULT_MODEL))
@@ -1051,7 +1080,7 @@ class Application(tk.Tk):
             project_path = store_imported_project(dialog.result, self.out_var.get().strip())
             self.reload_project(project_path)
             self.source_var.set(dialog.result["input"])
-            self.lang_var.set({"en": "英语", "ja": "日语"}.get(dialog.result["language"], "自动识别"))
+            self.lang_var.set(core.language_name(dialog.result["language"]))
             self.force_var.set(False)
             self.progress["value"] = 0
             self.status_var.set("已有字幕已导入并保存为项目；可直接校对和导出，未调用翻译 API。")
@@ -1137,7 +1166,9 @@ class Application(tk.Tk):
         def work():
             try:
                 client = DeepSeekClient(key, model)
-                box["fix"] = ja_fix.guess_fix(row.get("source") or "", before_zh, note, context, client)
+                box["fix"] = ja_fix.guess_fix(row.get("source") or "", before_zh, note, context,
+                                              client,
+                                              language=(self.project or {}).get("language") or "ja")
                 if box["fix"]:
                     cue = Cue(row["id"], row["start"], row["end"], box["fix"]["fixed"])
                     got = client.translate_safe([cue], language, [], glossary)
@@ -1671,7 +1702,7 @@ class Application(tk.Tk):
         self.save_settings()
         effective_mode = "transcribe" if self.pending_translate else mode
         config = {"input": self.source_var.get(), "project_path": self.project_path, "output": self.out_var.get(),
-                  "asr_model": local or self.asr_var.get(), "language": {"英语": "en", "日语": "ja"}.get(self.lang_var.get(), ""),
+                  "asr_model": local or self.asr_var.get(), "language": core.language_code(self.lang_var.get()) or "",
                   "device": "cpu" if self.device_var.get().startswith("CPU") else "cuda", "model_dir": str(USER_DIR / "models"),
                   "api_key": self.api_key_var.get(), "model": self.model_var.get().strip(),
                   "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": self.force_var.get(), "mode": effective_mode,
@@ -1713,7 +1744,7 @@ class Application(tk.Tk):
             self.persist_api_key()
             local = self.local_model_var.get().strip()
             config = {"input": self.source_var.get(), "project_path": self.project_path, "output": self.out_var.get(),
-                      "asr_model": local or self.asr_var.get(), "language": {"英语": "en", "日语": "ja"}.get(self.lang_var.get(), ""),
+                      "asr_model": local or self.asr_var.get(), "language": core.language_code(self.lang_var.get()) or "",
                       "device": "cpu" if self.device_var.get().startswith("CPU") else "cuda", "model_dir": str(USER_DIR / "models"),
                       "api_key": self.api_key_var.get(), "model": self.model_var.get().strip(),
                       "glossary": self.glossary.get("1.0", "end-1c").strip(), "force": False, "mode": "translate",
@@ -1958,7 +1989,10 @@ class Application(tk.Tk):
         def work():
             try:
                 client = DeepSeekClient(key, model)
-                box["result"] = chinese_check.check(cues, glossary, client)
+                # 语言跟着项目走：提示词用对应语言的话术（判据完全一样，见 system_prompt）
+                box["result"] = chinese_check.check(
+                    cues, glossary, client,
+                    language=(self.project or {}).get("language") or "ja")
             except Exception as exc:                          # noqa: BLE001
                 box["error"] = exc
             finally:

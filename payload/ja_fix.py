@@ -461,29 +461,53 @@ FIX_SYSTEM = (
     '只输出 JSON：{"wrong":"","right":"","fixed":"","why":""}；'
     "fixed 是改好之后的整句日文；整句看着没错就把 wrong 和 fixed 留空。"
 )
+# 非日语（目前主要是英语）：判据一模一样（只改听错的那一处、其余不动），
+# 只是把"写汉字而不是假名"换成"按这个语言的正常书写"。
+# 2026-10-14：以前这里只有日语版 ✗ 英文素材走这条路会去猜日文写法，完全错 ✗
+FIX_SYSTEM_EN = (
+    "You are proofreading subtitles for a video editor. The user says one word in this "
+    "speech-recognition result was misheard, and explains in Chinese what the line "
+    "**should mean**. Fix only that one word to the correct spelling in the source "
+    "language — change nothing else, not a single character. "
+    "Use the normal written form of that language (for English: normal spelling, "
+    "capitalisation and hyphenation; do not guess a different word). "
+    'Output ONLY JSON: {"wrong":"","right":"","fixed":"","why":""}. '
+    "fixed is the whole corrected line in the source language; if the line looks fine, "
+    "leave wrong and fixed empty."
+)
+
+
+def fix_system_prompt(language="ja"):
+    """挑一套「推正确写法」的提示词（日语 / 其它）。"""
+    return FIX_SYSTEM if (language or "ja").strip().lower().startswith("ja") else FIX_SYSTEM_EN
 
 STOP_WORDS = ("应该", "不是", "这句", "这里", "觉得", "不对", "可能", "好像", "意思",
               "翻译", "翻成", "而是", "但是", "这个", "那个")
 
 
-def guess_fix(text, current_zh, note, context_texts, client):
-    """问一次模型：按他说的意思，这句正确的日文该怎么写。
+def guess_fix(text, current_zh, note, context_texts, client, language="ja"):
+    """问一次模型：按他说的意思，这句正确的原文该怎么写。
 
     返回 {"wrong","right","fixed","why"}；拿不到可用的答复就返回 None（宁可退回人工）。
+
+    language：原文语言。日语走原来那套（含"假名歧义要换汉字写法"的二段问），
+    其它语言只问一次、不做假名那一步。
     """
-    user = json.dumps({"这句日文（识别结果）": text,
+    user = json.dumps({"这句原文（识别结果）": text,
                        "现在的译文": current_zh or "",
                        "用户说这句应该是什么意思": note or "",
                        "前后几句（同一场直播）": list(context_texts)[:6]}, ensure_ascii=False)
-    data = client.json_chat(FIX_SYSTEM, user, max_tokens=600)
+    data = client.json_chat(fix_system_prompt(language), user, max_tokens=600)
     wrong = (data.get("wrong") or "").strip()
     right = (data.get("right") or "").strip()
     fixed = (data.get("fixed") or "").strip()
     if not wrong or not right or not fixed or wrong == right or wrong not in text:
         return None
-    # 它只给了假名读音 —— 假名有歧义，翻译会猜歪（实测「おしょく」被翻成
-    # "想被请客""超喜欢职场"）。再问一次它的汉字写法。
-    if _KANA_ONLY.match(right) and not _KANA_ONLY.match(wrong):
+    # 只有日语才做这一步：它只给了假名读音 —— 假名有歧义，翻译会猜歪
+    # （实测「おしょく」被翻成"想被请客""超喜欢职场"）。再问一次它的汉字写法。
+    # 英语这类没有假名概念，硬套反而是错 ✗（2026-10-14）
+    if (language or "ja").strip().lower().startswith("ja") \
+            and _KANA_ONLY.match(right) and not _KANA_ONLY.match(wrong):
         kanji = kanji_form(right, text, note, client)
         if kanji:
             right = kanji
@@ -543,7 +567,9 @@ def matches_note(before_zh, after_zh, keywords):
 
 
 JUDGE_SYSTEM = (
-    "用户在给日语字幕挑错。他用中文说这句话**应该是什么意思**（有时还会说不应该是什么）。"
+    # 「日语」改成了「字幕」——这句判官看的是中文对不对得上，跟原文语言无关，
+    # 写成日语会让英文素材的场景莫名其妙 ✗（2026-10-14）
+    "用户在给字幕挑错。他用中文说这句话**应该是什么意思**（有时还会说不应该是什么）。"
     "下面给你「改之前的译文」和「改之后的译文」。"
     "请判断：改之后的译文，是不是表达了他要的意思？"
     "只要求意思对上，不要求字面一样 —— 同义的说法（例如「贪污」和「腐败」）算对。"

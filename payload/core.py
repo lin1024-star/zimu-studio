@@ -26,6 +26,27 @@ APP_VERSION = "2.3"
 DEFAULT_MODEL = "deepseek-flash"
 API_URL = "https://api.deepseek.com/chat/completions"
 LANGUAGES = {"en": "英语", "ja": "日语", "zh": "中文"}
+# 界面上给的语言选项。**内部对任何 Whisper 支持的语言都成立**（识别把代码直接交给
+# Whisper、翻译也只看代码），这里列几个只是别让下拉框太长。
+# 要加语言：改这一行 + LANGUAGES 里补个显示名就行，其它地方不用动。
+UI_LANGUAGE_CHOICES = ("自动识别", "英语", "日语")
+AUTO_LANGUAGE = "自动识别"
+
+
+def language_code(choice):
+    """界面上的选择 → Whisper 语言代码；「自动识别」/空值 → None（让它自己判断）。
+
+    2026-10-14：原来这段映射在 app.py 里内联写了 4 遍（`{"英语": "en", "日语": "ja"}`）✗
+    加一门语言就得改 4 个地方 —— 收到这里，一处定义。
+    """
+    return {name: code for code, name in LANGUAGES.items()}.get((choice or "").strip())
+
+
+def language_name(code, default=AUTO_LANGUAGE):
+    """语言代码 → 界面显示名（从 SRT 导入时回填下拉框用）。"""
+    return LANGUAGES.get((code or "").strip().lower(), default)
+
+
 PROMPT_VERSION = 1
 
 
