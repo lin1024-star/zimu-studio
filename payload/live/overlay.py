@@ -203,12 +203,18 @@ class GlossaryDialog(tk.Toplevel):
 
 
 class Overlay:
-    """悬浮字幕窗。所有界面操作都在主线程；工作线程只往队列里放东西。"""
+    """悬浮字幕窗。所有界面操作都在主线程；工作线程只往队列里放东西。
+
+    master 给不给决定它是「独立程序的主窗口」还是「主界面里的一个浮窗」：
+      · master=None（独立运行 live/app.py）→ 自己建 tk.Tk()，行为跟以前一模一样 ✓
+      · master=主界面窗口（从主界面的「实时字幕」页启动）→ 用 tk.Toplevel，
+        **不建第二个 Tk 根**（同一个进程里两个 Tk 根是玄学 bug 的温床 ✗）
+    """
 
     def __init__(self, on_quit=None, on_toggle_pause=None, on_reload_glossary=None,
                  suggest=None, save_term=None, visible=True,
                  list_sources=None, on_pick_source=None, source_id="default",
-                 appearance=None, on_save_appearance=None):
+                 appearance=None, on_save_appearance=None, master=None):
         self.on_quit = on_quit
         self.on_toggle_pause = on_toggle_pause
         self.on_reload_glossary = on_reload_glossary
@@ -224,7 +230,9 @@ class Overlay:
         self.paused = False
         self._drag = (0, 0)
 
-        self.root = tk.Tk()
+        # 谁建谁负责销毁：只有自己建的 Tk 根才在关闭时 destroy
+        self.owns_root = master is None
+        self.root = tk.Tk() if self.owns_root else tk.Toplevel(master)
         self.root.title("实时字幕")
         if not visible:
             # 自检用：建好但不显示，屏幕上不会闪出任何东西
@@ -351,9 +359,21 @@ class Overlay:
 
     # ---------- 按钮 ----------
     def _quit(self):
+        """关掉悬浮字幕窗。
+
+        独立运行时：这就是关程序 ✓
+        嵌在主界面里时：**只关浮窗，不能把主界面一起 destroy 掉** ✗
+        （所以先通知 on_quit 停掉会话，再按「谁建谁销毁」决定怎么收尾）
+        """
         if self.on_quit:
             self.on_quit()
-        self.root.destroy()
+        if self.owns_root:
+            self.root.destroy()
+        else:
+            try:
+                self.root.withdraw()
+            except tk.TclError:
+                pass
 
     def _toggle(self):
         self.paused = not self.paused
@@ -451,7 +471,12 @@ class Overlay:
         self.status.configure(text=text)
 
     def run(self):
-        self.root.mainloop()
+        """独立运行时才进自己的事件循环。
+
+        嵌在主界面里时**绝对不能调** ✗ —— 那会把主界面的事件循环顶掉。
+        """
+        if self.owns_root:
+            self.root.mainloop()
 
 
 class AppearanceDialog(tk.Toplevel):

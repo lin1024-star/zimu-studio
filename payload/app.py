@@ -622,6 +622,167 @@ class Application(tk.Tk):
         text.insert("1.0", HELP)
         text.configure(state="disabled")
 
+        # ⚠ 新页面一律加在 build_ui 的**末尾**。
+        # 真出过事：把新代码插进 build_ui 中间，后半页会变成那个方法的方法体，页面直接空掉 ✗
+        self.build_live_tab(self.notebook)
+
+    # ---------------- 实时字幕页 ----------------
+    def build_live_tab(self, notebook):
+        """主界面里的「实时字幕」页。
+
+        为什么要有这一页（2026-10-14）：实时字幕原来是**独立脚本**，
+        要敲命令 `python live/app.py` 才能启动（更新记录里自己写着"还是独立入口"）——
+        对不懂编程的人来说，等于没有这个功能 ✗
+        现在做成主界面的一页：共用术语表，启动/停止一个按钮，结果还能导出 ✓
+        """
+        page = ttk.Frame(notebook, padding=16)
+        notebook.add(page, text="实时字幕")
+
+        ttk.Label(page, text="实时字幕（看直播用）", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(page, text="抓电脑正在播的声音 → 在本机识别 → 翻译 → 屏幕下方一条悬浮字幕。\n"
+                             "音频不出本机；只有识别出来的日文和中文会发给翻译接口（和普通任务一样）。",
+                  style="Muted.TLabel", justify="left").pack(anchor="w", pady=(4, 12))
+
+        row = ttk.Frame(page)
+        row.pack(fill="x", pady=(0, 8))
+        self.live_start_btn = ttk.Button(row, text="启动实时字幕", command=self.start_live)
+        self.live_start_btn.pack(side="left")
+        self.live_stop_btn = ttk.Button(row, text="停止", command=self.stop_live, state="disabled")
+        self.live_stop_btn.pack(side="left", padx=8)
+        ttk.Label(row, text="　识别模型：turbo（实时专用，自动挑最快能用的）",
+                  style="Muted.TLabel").pack(side="left")
+
+        self.live_state = ttk.Label(page, text="状态：未运行", font=(FONT_FAMILY, 11))
+        self.live_state.pack(anchor="w", pady=(6, 2))
+        self.live_stats = ttk.Label(page, text="运行时长 —　延迟中位 —　每步 —　已出 0 句",
+                                    style="Muted.TLabel")
+        self.live_stats.pack(anchor="w")
+        self.live_last = ttk.Label(page, text="最近一条：—", style="Muted.TLabel",
+                                   wraplength=900, justify="left")
+        self.live_last.pack(anchor="w", pady=(2, 8))
+
+        box = ttk.LabelFrame(page, text="这一场的结果", padding=10)
+        box.pack(fill="x", pady=(4, 8))
+        self.live_export_srt = ttk.Button(box, text="导出 SRT（原文＋中文）…",
+                                          command=lambda: self.export_live("srt"), state="disabled")
+        self.live_export_srt.pack(side="left")
+        self.live_export_txt = ttk.Button(box, text="导出 TXT…",
+                                          command=lambda: self.export_live("txt"), state="disabled")
+        self.live_export_txt.pack(side="left", padx=8)
+        self.live_count = ttk.Label(box, text="还没有内容", style="Muted.TLabel")
+        self.live_count.pack(side="left", padx=10)
+
+        ttk.Label(page, text="用法：先让电脑放出声音（视频、直播、游戏都行），再点「启动实时字幕」。\n"
+                             "悬浮字幕窗上可以：暂停、换音源、调外观（透明度/字号/宽度）、当场加术语。\n"
+                             "术语表用的就是「翻译与识别设置」页那一份（点过「保存设置」就生效）。",
+                  style="Muted.TLabel", justify="left").pack(anchor="w", pady=(6, 0))
+        self.refresh_live()           # 每秒刷一次这一页（没启动时也刷，句数会跟着变 ✓）
+
+    def start_live(self):
+        """启动实时字幕（浮窗 + 采集 + 识别 + 翻译）。"""
+        if getattr(self, "live", None) is not None and self.live.started_at:
+            return
+        try:
+            self.save_settings()          # 先把术语表存进设置文件，实时这一边才读到同一份 ✓
+        except Exception as exc:          # noqa: BLE001
+            self.safe_log(f"启动实时字幕前保存设置失败（继续启动）：{type(exc).__name__}")
+        try:
+            if getattr(self, "live", None) is None:
+                # 懒导入：live 这一套导入时会改 sys.path、拉声音库，
+                # 不该在开软件的时候就做（用不到的人完全不受影响 ✓）
+                from live.app import LiveApp
+                self.live = LiveApp(master=self)
+            else:
+                self.live.reload_glossary()
+            self.live.start()
+        except Exception as exc:          # noqa: BLE001
+            self.log(f"实时字幕启动失败：{type(exc).__name__}: {exc}")
+            messagebox.showerror("实时字幕启动失败",
+                                 f"{type(exc).__name__}: {exc}\n\n"
+                                 "常见原因：没有可用的识别模型（先点「一键安装 / 修复」）、"
+                                 "或系统不允许录制声音。")
+            return
+        self.live_state.configure(text="状态：运行中")
+        self.live_start_btn.configure(state="disabled")
+        self.live_stop_btn.configure(state="normal")
+        self.live_export_srt.configure(state="normal")
+        self.live_export_txt.configure(state="normal")
+        self.log("实时字幕已启动 —— 悬浮窗可以拖动、暂停、调外观；当场加术语立刻生效。")
+        self.refresh_live()
+
+    def stop_live(self):
+        """停止实时字幕（收起浮窗，不影响主界面）。"""
+        live = getattr(self, "live", None)
+        if live is not None:
+            try:
+                live.stop()
+            except Exception as exc:      # noqa: BLE001
+                self.safe_log(f"停止实时字幕时出错（已忽略）：{type(exc).__name__}")
+        self.live_state.configure(text="状态：未运行")
+        self.live_start_btn.configure(state="normal")
+        self.live_stop_btn.configure(state="disabled")
+        self.log("实时字幕已停止。")
+
+    def refresh_live(self):
+        """每秒刷一次这一页的状态（运行时长 / 延迟中位 / 每步 / 句数 / 最近一条）。"""
+        live = getattr(self, "live", None)
+        try:
+            if live is not None:
+                st = live.stats()
+                self.live_stats.configure(
+                    text=f"运行时长 {st['minutes']:.1f} 分钟　延迟中位 {st['median']:.1f}s　"
+                         f"每步 {st['per_step']:.2f}s / 预算 {st['budget']:.1f}s　"
+                         f"已出 {st['sentences']} 句")
+                if live.history:
+                    last = live.history[-1]
+                    self.live_last.configure(
+                        text=f"最近一条：{last.get('zh') or ''}　〔{last.get('ja') or ''}〕")
+                n = len(live.result_rows())
+                self.live_count.configure(text=f"已攒下 {n} 句（可导出）" if n else "还没有内容")
+                if live.started_at:
+                    self.live_state.configure(
+                        text="状态：运行中" + ("（已暂停）" if st["paused"] else ""))
+        except Exception as exc:          # noqa: BLE001
+            self.safe_log(f"刷新实时字幕状态出错（已忽略）：{type(exc).__name__}")
+        self.after(1000, self.refresh_live)
+
+    def export_live(self, kind):
+        """把这一场的结果导出去。
+
+        为什么要做：实时字幕以前**完全没有导出** ✗ 直播完只能看，没法拿去精修或上传。
+        """
+        live = getattr(self, "live", None)
+        rows = live.result_rows() if live is not None else []
+        latest = {}
+        for row in rows:                  # 半句与整句共用一个 id → 取最后一次（那就是整句）
+            latest[row.get("id")] = row
+        ordered = sorted(latest.values(), key=lambda r: r.get("start") or 0.0)
+        cues = [Cue(id=i, start=float(r.get("start") or 0.0), end=float(r.get("end") or 0.0),
+                    source=(r.get("ja") or "").strip(), zh=(r.get("zh") or "").strip())
+                for i, r in enumerate(ordered, 1)]
+        cues = [c for c in cues if c.source and c.zh]
+        if not cues:
+            messagebox.showinfo("还没有内容", "这一场还没有完整的中日对照，先启动听一会儿。")
+            return
+        default = time.strftime("实时字幕_%Y%m%d_%H%M") + "." + kind
+        path = filedialog.asksaveasfilename(
+            title="导出这一场的实时字幕", defaultextension="." + kind, initialfile=default,
+            filetypes=[("SRT 字幕", "*.srt")] if kind == "srt" else [("文本文件", "*.txt")])
+        if not path:
+            return
+        try:
+            if kind == "srt":
+                body = core.format_srt(cues, translated=True, language="ja", bilingual=True)
+            else:
+                body = "\n".join(line for c in cues for line in (c.source, c.zh, ""))
+            with open(path, "w", encoding="utf-8", newline="") as handle:
+                handle.write(body)
+        except Exception as exc:          # noqa: BLE001
+            messagebox.showerror("导出失败", f"{type(exc).__name__}: {exc}")
+            return
+        self.log(f"实时字幕已导出 {len(cues)} 句 → {path}")
+        messagebox.showinfo("导出好了", f"导出 {len(cues)} 句：\n{path}")
+
     def toggle_more(self):
         """「更多操作」展开 / 收起 —— 不常用的东西默认不占地方。
 
@@ -2218,6 +2379,13 @@ class Application(tk.Tk):
             self.persist_api_key()
         except Exception as exc:                             # noqa: BLE001
             self.safe_log(f"退出时保存密钥失败（不影响关闭）：{type(exc).__name__}")
+        # 实时字幕开着的话，先把它收了（采集线程和浮窗不能留在进程里）
+        live = getattr(self, "live", None)
+        if live is not None and getattr(live, "started_at", None):
+            try:
+                live.stop()
+            except Exception as exc:                         # noqa: BLE001
+                self.safe_log(f"退出时停止实时字幕失败（不影响关闭）：{type(exc).__name__}")
         if self.busy:
             try:
                 stop = messagebox.askyesno("任务正在运行", "停止当前任务并退出？已完成的翻译批次会保留。")

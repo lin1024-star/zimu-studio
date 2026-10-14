@@ -40,6 +40,14 @@ from live.overlay import Overlay  # noqa: E402
 from live.pipeline import DEFAULTS, LiveTranscriber, Translator  # noqa: E402
 
 FLASH_MODEL = "deepseek-flash"
+
+
+def median_latency(values):
+    """延迟中位数。空的时候给 0，别让界面显示 nan。"""
+    if not values:
+        return 0.0
+    recent = sorted(values)[-50:]          # 只看最近 50 条：卡过一次不该一直拖累显示
+    return recent[len(recent) // 2]
 # 这两个文件放在「数据根目录」，不要放程序目录：
 # 程序目录（Easy\app-2.x）在每次「一键安装 / 修复」时会被整个替换掉，
 # 放里面的话，运行记录和你辛苦加的词会在重装时全没了。
@@ -123,10 +131,15 @@ def log(msg):
 
 
 class LiveApp:
-    def __init__(self, use_device=True, file_path=None, verbose=False):
+    def __init__(self, use_device=True, file_path=None, verbose=False, master=None,
+                 visible=True):
         self.use_device = use_device
         self.file_path = file_path
         self.verbose = verbose
+        # master 给了就说明是主界面里的「实时字幕」页在用它（浮窗用 Toplevel，不建第二个 Tk 根）
+        self.master = master
+        # visible=False 给自检用：建好但不显示，屏幕上不会闪出东西
+        self.visible = visible
         self.out = queue.Queue()          # 工作线程 → 界面线程
         self.base_glossary = self._read_settings_glossary()
         self.glossary_lock = threading.Lock()
@@ -141,8 +154,19 @@ class LiveApp:
         self.ja_lengths = []
         self.zh_lengths = []
         self.seen_ids = set()
+        self.history = []                 # 这一场实时字幕的全部结果（导出 SRT/TXT 用）
         self.source_id = load_source_id()
         self.appearance = load_appearance()
+        self.overlay = None               # 按需创建：不点启动就不该弹出悬浮窗 ✗
+
+    def ensure_overlay(self):
+        """把悬浮字幕窗建起来（只建一次）。
+
+        为什么改成按需：主界面里这一页一直在，如果一开软件就弹浮窗，太吵 ✗
+        独立运行时 start() 里也会调它，行为跟以前一样 ✓
+        """
+        if self.overlay is not None:
+            return self.overlay
         self.overlay = Overlay(
             on_quit=self.shutdown,
             on_toggle_pause=self.toggle_pause,
@@ -154,7 +178,33 @@ class LiveApp:
             source_id=self.source_id,
             appearance=self.appearance,
             on_save_appearance=self.remember_appearance,
+            master=self.master,
+            visible=self.visible,
         )
+        return self.overlay
+
+    def stats(self):
+        """给主界面那一页看的实时状态。"""
+        whole = [x for x in self.history if not x.get("partial")]
+        ran = (time.time() - self.capture_wall) if getattr(self, "capture_wall", None) else 0.0
+        trans = self.transcriber
+        per_step = 0.0
+        if trans is not None and trans.stats.get("steps"):
+            per_step = trans.stats["seconds"] / trans.stats["steps"]
+        return {
+            "running": bool(self.capture is not None and self.started_at),
+            "minutes": ran / 60.0,
+            "sentences": len(whole),
+            "median": median_latency(self.latencies),
+            "per_step": per_step,
+            "budget": DEFAULTS["step"],
+            "paused": self.paused,
+            "source": source_label(self.source_id),
+        }
+
+    def result_rows(self):
+        """这一场的结果（整句），给导出用。"""
+        return [dict(x) for x in self.history if not x.get("partial")]
 
     # ---------- 外观 ----------
     def remember_appearance(self, appearance):
@@ -227,6 +277,7 @@ class LiveApp:
         mode = "抓系统声音" if self.use_device else f"文件模拟 {self.file_path}"
         log("=" * 50)
         log(f"启动：{mode}")
+        self.ensure_overlay()
         self.overlay.set_status("正在准备…")
         self.overlay.show_placeholder("正在启动…")
         autoclose = float(os.environ.get("LIVE_AUTOCLOSE", "0") or 0)
@@ -307,6 +358,18 @@ class LiveApp:
             except Exception:  # noqa: BLE001
                 pass
 
+    def stop(self):
+        """从主界面那一页点「停止」时走这里：停采集 + 收起浮窗（**不关主界面**）。"""
+        self.shutdown()
+        self.capture = self.transcriber = self.translator = None
+        self.started_at = None
+        if self.overlay is not None:
+            try:
+                self.overlay.root.withdraw()
+            except Exception:  # noqa: BLE001
+                pass
+        log("已停止。")
+
     # ---------- 界面轮询 ----------
     def _pump(self):
         try:
@@ -323,6 +386,9 @@ class LiveApp:
                         if sid is not None:
                             self.seen_ids.add(sid)
                         self.latencies.append(lat)
+                    # 留一份完整结果：主界面那页要用它导出 SRT/TXT
+                    # （半句和整句都留：导出时按 id 取最后一次，等于整句）
+                    self.history.append(dict(payload, latency=lat))
                     log(f"字幕[{mark}] 延迟{lat:5.1f}s | {payload['zh']}  〔{payload['ja']}〕")
                     self.ja_lengths.append(len(payload["ja"]))
                     self.zh_lengths.append(len(payload["zh"]))
