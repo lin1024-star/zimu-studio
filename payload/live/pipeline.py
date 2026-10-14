@@ -6,6 +6,7 @@
   STEP=2.0s   每 2 秒识别一次 —— 显卡实测每步 1.7 秒，占用约 88%，跟得上
 """
 import queue
+import re
 import sys
 import threading
 import time
@@ -82,7 +83,17 @@ class SentenceAssembler:
         self.sep = "" if _is_cjk_language(cfg.get("language")) else " "
 
     def _join(self, words):
-        return self.sep.join(w[2] for w in words)
+        """把词拼成一句。
+
+        英语这类词间要加空格 ✓ 但**标点前不能加** ——
+        2026-10-14 实测：Whisper 把「$10,000」切成「$10」和「,000」两个 token，
+        加空格之后变成「$10 ,000」✗（使用者那期实时字幕里真出现了）。
+        """
+        text = self.sep.join(w[2] for w in words)
+        if self.sep:
+            text = re.sub(r"\s+([,.;:!?%)\]}»”’])", r"\1", text)      # 标点/右括号前不要空格
+            text = re.sub(r"([(\[{«“‘])\s+", r"\1", text)              # 左括号后不要空格
+        return text
 
     def feed(self, new_words):
         for w in new_words:

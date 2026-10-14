@@ -579,7 +579,35 @@ def wrap_text(text, width):
             line = candidate
     if line.strip():
         lines.append(line.strip())
-    return "\n".join(lines)
+    return "\n".join(_balance_lines(lines, width))
+
+
+def _balance_lines(lines, width):
+    """别让最后一行只剩 1~2 个字（孤字行）。
+
+    2026-10-14 实测：使用者那期真实字幕里有 **45 行**是孤字行
+    （例如「…从他锁定的 / 的」✗）—— 剪出来很难看，是排版上公认的毛病 ✓
+
+    做法：从上一行借几个字过来。借完上一行会变得太短就放弃
+    （宁可留着孤字，也不能把上一行也弄坏 ✗）。中日文按字借，英文按词借。
+    """
+    if len(lines) < 2:
+        return lines
+    last, prev = lines[-1], lines[-2]
+    if len(last) > 2 or len(last) >= len(prev):
+        return lines
+    need = min(len(last) + 2, width) - len(last)          # 让最后一行至少 3 个字
+    if need <= 0 or len(prev) - need < 3:
+        return lines
+    if re.search(r"[\u2e80-\u9fff\u3040-\u30ff\uac00-\ud7af]", prev):
+        moved, rest = prev[len(prev) - need:], prev[:len(prev) - need]
+    else:
+        parts = prev.split(" ")
+        if len(parts) < 2:
+            return lines
+        moved, rest = parts[-1] + " ", " ".join(parts[:-1])
+    lines[-2], lines[-1] = rest.rstrip(), (moved + last).strip()
+    return lines
 
 
 def srt_end_time(cue):

@@ -777,6 +777,7 @@ class Application(tk.Tk):
             latest[row.get("id")] = row
         ordered = sorted(latest.values(), key=lambda r: r.get("start") or 0.0)
         cues = []
+        prev_end = 0.0
         for index, r in enumerate(ordered, 1):
             source = (r.get("ja") or "").strip()
             zh = (r.get("zh") or "").strip()
@@ -784,11 +785,14 @@ class Application(tk.Tk):
                 continue
             start = float(r.get("start") or 0.0)
             end = float(r.get("end") or 0.0)
-            # 实时这一路的时间轴来自逐词时间戳，偶尔会给出零长度/倒着的片段 ✗
-            # （2026-10-14 端到端实测撞到过：format_srt 会拒绝「结束不晚于开始」）
-            # 导出侧兜底：至少给 0.3 秒，保证字幕是能看的 ✓
+            # 实时这一路的时间轴有两个已知毛病（2026-10-14 实测那份 161 条里 44 处重叠）：
+            #   · 偶尔给出零长度/倒着的片段 → format_srt 会拒绝
+            #   · 相邻两条**互相重叠** → 在 PR 里会闪、会叠字
+            # 导出侧统一排开：起点不早于上一条的结束，时长至少 0.3 秒 ✓
+            start = max(start, prev_end)
             if end <= start:
                 end = start + 0.3
+            prev_end = end
             cues.append(Cue(id=index, start=start, end=end, source=source, zh=zh))
         if not cues:
             messagebox.showinfo("还没有内容", "这一场还没有完整的中日对照，先启动听一会儿。")
