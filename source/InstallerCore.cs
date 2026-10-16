@@ -306,18 +306,20 @@ namespace SubtitleEasy {
         static void InstallLauncher(){string source=Assembly.GetExecutingAssembly().Location,dest=Path.Combine(Root,"SubtitleStudio.exe");if(Path.GetFullPath(source).Equals(Path.GetFullPath(dest),StringComparison.OrdinalIgnoreCase))return;string tmp=dest+".new";File.Copy(source,tmp,true);if(File.Exists(dest))File.Replace(tmp,dest,null);else File.Move(tmp,dest);}
         static void Set(object target,string name,object value){target.GetType().InvokeMember(name,BindingFlags.SetProperty,null,target,new[]{value});}
         static void Shortcut(){
-            string desktop=Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);Directory.CreateDirectory(desktop);object shell=null,link=null,shell2=null,link2=null;
-            string exe=Path.Combine(Root,"SubtitleStudio.exe");string live=Path.Combine(App,"live","app.py");
+            string desktop=Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);Directory.CreateDirectory(desktop);object shell=null,link=null;
+            string exe=Path.Combine(Root,"SubtitleStudio.exe");
             try{
                 shell=Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));link=shell.GetType().InvokeMember("CreateShortcut",BindingFlags.InvokeMethod,null,shell,new[]{Path.Combine(desktop,"字幕工坊.lnk")});Set(link,"TargetPath",exe);Set(link,"Arguments","--launch");Set(link,"WorkingDirectory",Root);Set(link,"Description","字幕工坊：本地识别、字幕翻译与校对");link.GetType().InvokeMember("Save",BindingFlags.InvokeMethod,null,link,null);
-                // 实时字幕是独立小工具，单独一个快捷方式，不塞进主界面（两者的使用流程完全不同）。
-                // 用 pythonw 启动：不弹黑窗口；出错时程序自己弹提示框并写日志。
-                if(File.Exists(live)){
-                    shell2=Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));link2=shell2.GetType().InvokeMember("CreateShortcut",BindingFlags.InvokeMethod,null,shell2,new[]{Path.Combine(desktop,"实时中文字幕.lnk")});Set(link2,"TargetPath",Path.Combine(PythonRoot,"pythonw.exe"));Set(link2,"Arguments",Files.Args(new[]{"-X","utf8","-E","-s",live}));Set(link2,"WorkingDirectory",App);Set(link2,"Description","实时中文字幕：看直播时把日语实时翻成中文字幕");link2.GetType().InvokeMember("Save",BindingFlags.InvokeMethod,null,link2,null);
-                }
+                // 2026-10-14：**不再**往桌面放「实时中文字幕」快捷方式。
+                // 为什么改：实时字幕已经进了主界面第 5 页（共用同一份术语表和设置），
+                // 单独再放一个图标，使用者和朋友会以为"这软件在我桌面上偷偷放了东西" ——
+                // 有位朋友的反馈原话是"没吓死我" ✗ 装什么就该看得见、说得清。
+                // 桌面只留「字幕工坊」一个图标。
+                // 已经装过、桌面还留着旧图标的机器，这里**不主动删** —— 悄悄删别人桌面上的
+                // 东西是同一类惊吓；那个图标还能用，想删自己删（指南里写了）。
             }
             catch{File.WriteAllText(Path.Combine(desktop,"字幕工坊.cmd"),"@echo off\r\nstart \"\" \""+exe+"\" --launch\r\n",Encoding.ASCII);}
-            finally{if(link2!=null)Marshal.FinalReleaseComObject(link2);if(shell2!=null)Marshal.FinalReleaseComObject(shell2);if(link!=null)Marshal.FinalReleaseComObject(link);if(shell!=null)Marshal.FinalReleaseComObject(shell);}
+            finally{if(link!=null)Marshal.FinalReleaseComObject(link);if(shell!=null)Marshal.FinalReleaseComObject(shell);}
         }
         public static bool Installed {get{return File.Exists(Ready)&&File.Exists(Python)&&File.Exists(Path.Combine(App,"start_app.py"));}}
         public static void Launch(){if(!Installed)throw new IOException("尚未完成安装，请先点“一键安装 / 修复”。");var psi=new ProcessStartInfo(Path.Combine(PythonRoot,"pythonw.exe"),Files.Args(new[]{"-X","utf8","-E","-s",Path.Combine(App,"start_app.py")})){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=App};using(var p=Process.Start(psi)){if(p==null)throw new IOException("软件没有启动。");if(p.WaitForExit(1800)&&p.ExitCode!=0)throw new IOException("启动失败。请点“导出安装诊断”，或重新安装 / 修复。");}}
