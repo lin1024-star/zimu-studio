@@ -25,7 +25,10 @@ BOTTOM_GAP = 150
 
 # ---------- 外观（透明度 / 字号 / 宽度）----------
 # 这三个数是使用者在「外观…」里能调的。
-# **高度不给单独调** —— 它按字号算出来（见 window_height）：手调高度容易把三行切掉。
+# **高度不给单独调** —— 它按字号算，并且永远不会矮到装不下内容（见 Overlay._min_height）。
+# 2026-10-16 更正：这里原来写的理由是「手调高度容易把三行切掉」。
+# 逐档实测推翻了它 —— 32 个「字号 × 宽度」组合里三行字幕一个都没被切，
+# 会被挤掉的是**最底下那行状态栏**。理由换了，结论没变（详见 AppearanceDialog 的说明）。
 APPEARANCE_DEFAULT = {"alpha": 0.93, "width": WIN_W, "font": 20}
 ALPHA_MIN, ALPHA_MAX = 0.30, 1.00      # 最低只到 30%：再低就真看不清了
 FONT_MIN, FONT_MAX = 12, 40
@@ -242,7 +245,10 @@ class Overlay:
         self.root.attributes("-topmost", True)
         self.root.configure(bg=BG)
         width = self.appearance["width"]
+        # 先用「设计高度」摆好位置，免得窗口以 1×1 闪一下。
+        # 界面搭完之后会走 _fit_height()，量一次真实需要的高度，不够就撑上去。
         height = window_height(self.appearance["font"])
+        self._height = height
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
         x = max(0, (sw - width) // 2)
@@ -264,12 +270,19 @@ class Overlay:
         bar.bind("<Button-1>", self._drag_start)
         bar.bind("<B1-Motion>", self._drag_move)
 
-        self.lines_box = tk.Frame(self.root, bg=BG)
-        self.lines_box.pack(fill="both", expand=True, padx=10, pady=(8, 0))
-
+        # 状态栏**先**打包，而且是贴底（side="bottom"）。
+        # 为什么顺序要紧：pack 按调用顺序分配空间，谁后打包谁先被挤掉。
+        # 原来状态栏最后打包 → 窗口一旦不够高，第一个消失的就是它 ✗
+        # （2026-10-16 实测：7 个「字号 × 宽度」组合下它只剩 1~6 像素，
+        #   「正在启动…」「已暂停」这些提示直接看不见）
+        # 现在它先占住自己那 23 像素，内容区拿剩下的 —— 万一还是挤，
+        # 挤的是第三条字幕，而不是状态提示。
         self.status = tk.Label(self.root, text="正在启动…", bg=BG, fg="#777777",
                                font=FONT_UI, anchor="w")
-        self.status.pack(fill="x", padx=10, pady=(0, 6))
+        self.status.pack(side="bottom", fill="x", padx=10, pady=(0, 6))
+
+        self.lines_box = tk.Frame(self.root, bg=BG)
+        self.lines_box.pack(fill="both", expand=True, padx=10, pady=(8, 0))
 
         self.lines = []
         for _ in range(MAX_LINES):
@@ -289,9 +302,53 @@ class Overlay:
 
         # 界面搭完了才应用外观：字号要写进每一行的 label，此时它们才存在。
         self._apply_appearance()
+        # 外观写完之后再量一次：设计高度不够装内容时，这里把它撑上去。
+        self._fit_height()
         self._top_job = None
         if visible:
             self._keep_top()
+
+    # ---------- 尺寸 ----------
+    def _min_height(self):
+        """三行一个字都没有时，这个窗口最少需要多高（工具条 + 三行 + 状态栏）。
+
+        为什么要量这个（2026-10-16 逐档实测出来的）：窗口高度原来只按字号等比算
+        （250 × 字号 ÷ 20），完全没管底下还有一行状态栏。32 个「字号 × 宽度」组合里，
+        7 个装不下 —— 被挤掉的**不是字幕**，而是最底下那行状态提示，
+        只剩 1~6 像素（「正在启动…」「已暂停」就看不见了）✗
+
+        **用空行量，不用当前文字量**：空行的高度只由字体决定，
+        而字幕每两秒换一次 —— 拿当前文字量的话，窗口会跟着一跳一跳 ✗
+        """
+        saved = [line["label"].cget("text") for line in self.lines]
+        try:
+            for line in self.lines:
+                line["label"].configure(text="")
+            self.root.update_idletasks()
+            return self.root.winfo_reqheight()
+        finally:
+            for line, text in zip(self.lines, saved):
+                line["label"].configure(text=text)
+
+    def _fitted_height(self):
+        """真正要用的高度：设计高度 和「内容最少需要的高度」取大的那个。
+
+        字号 20 默认档：设计 250 > 需要 189 → **看起来跟以前一模一样** ✓
+        字号 12：设计 150 < 需要 175 → 撑到 175，三行和状态栏都留得住 ✓
+        """
+        return max(window_height(self.appearance["font"]), self._min_height())
+
+    def _fit_height(self):
+        """按 `_fitted_height()` 摆好尺寸；底边仍然停在离屏幕底部 BOTTOM_GAP 的位置。"""
+        width = self.appearance["width"]
+        height = self._height
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        x = self.root.winfo_x()
+        if x <= 0:                       # 还没摆好位置（自检时窗口是 withdraw 的）
+            x = max(0, (sw - width) // 2)
+        y = max(0, sh - height - BOTTOM_GAP)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
 
     # ---------- 外观 ----------
     def _apply_appearance(self, reposition=False):
@@ -307,7 +364,16 @@ class Overlay:
             self.root.attributes("-alpha", values["alpha"])
 
         width = values["width"]
-        height = window_height(values["font"])
+
+        # 顺序要紧：**先把字号和折行写进去，再量高度**。
+        # 反过来的话，量到的是上一套外观需要的尺寸，白量一次。
+        wrap = max(200, width - 80)
+        for index, line in enumerate(self.lines):
+            line["label"].configure(font=self._label_font(index), wraplength=wrap)
+        self.status.configure(font=FONT_UI)
+
+        height = self._fitted_height()
+        self._height = height
         if reposition:
             old_w = max(1, self.root.winfo_width())
             old_h = max(1, self.root.winfo_height())
@@ -316,11 +382,6 @@ class Overlay:
             x = max(0, min(self.root.winfo_screenwidth() - width, cx - width // 2))
             y = max(0, min(self.root.winfo_screenheight() - height, cy - height // 2))
             self.root.geometry(f"{width}x{height}+{x}+{y}")
-
-        wrap = max(200, width - 80)
-        for index, line in enumerate(self.lines):
-            line["label"].configure(font=self._label_font(index), wraplength=wrap)
-        self.status.configure(font=FONT_UI)
 
     def _label_font(self, index):
         """第 0 行是当前这句（大），往下的旧句小一号。"""
@@ -485,8 +546,19 @@ class AppearanceDialog(tk.Toplevel):
     三个滑杆**一拖就实时生效**（所见即所得，不用关掉再开）；
     点「完成」才写进设置文件，点「取消」退回打开前的样子。
 
-    **没有高度滑杆是故意的**：高度按字号算（`window_height`），
-    手调高度很容易把三行切掉 —— 窗口看着在、第三行只露出半截。
+    **没有高度滑杆是故意的**（2026-10-16 重新量过之后仍然这么定）：
+      · 加了它，能多做的事是零 —— 宽 600~1920 已经独立可调，高 150~500 跟着字号走
+        （每档 12.5 像素）。要更高就调大字号、要更矮就调小字号，
+        能用的「宽 × 高」组合现在两根滑杆都调得出来。
+      · 「高度」本来就不是能独立定的量：同一个字号下，宽 600 比宽 1100 要多 61 像素
+        （窄了字要折更多行）。做成第三根滑杆 = 让使用者手工去解一个三元方程。
+      · 它还会多一个「能设错」的旋钮：高度一旦小于内容需要的高度，
+        被**静默**挤掉的是最底下的状态提示（下面这条实测就是证据）。
+
+    ⚠ 2026-10-16 更正：这里原来写的理由是「手调高度很容易把三行切掉」。
+    逐档实测**不成立** —— 32 个「字号 × 宽度」组合里，三行字幕一个都没被切；
+    被挤掉的是状态栏（7 个组合只剩 1~6 像素）。真正该修的是高度公式，
+    已经修了（见 `Overlay._min_height` / `Overlay._fitted_height`）。
     """
 
     def __init__(self, parent, appearance, on_change, on_save):
@@ -511,7 +583,8 @@ class AppearanceDialog(tk.Toplevel):
         self._slider("透明度", self.alpha_var, int(ALPHA_MIN * 100), int(ALPHA_MAX * 100), "%d%%",
                      "调低字幕更透，看得见后面的画面。最低只到 30% —— 再低就真看不清了。")
         self._slider("字号", self.font_var, FONT_MIN, FONT_MAX, "%d",
-                     "字号一变，行高和窗口高度会自动跟着变。")
+                     "字号一变，行高和窗口高度会自动跟着变。窗口不会矮到装不下三行字幕"
+                     "和最底下那行状态提示。")
         self._slider("宽度", self.width_var, WIDTH_MIN, WIDTH_MAX, "%d",
                      "窄一点适合小屏；长句子会自动折行，不会跑出窗口。")
 
