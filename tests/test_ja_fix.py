@@ -184,7 +184,11 @@ class TableFileTest(unittest.TestCase):
             path = ja_fix.ensure_table(tmp)
             self.assertTrue(path.is_file())
             self.assertIn("お食系官 = 汚職警官", path.read_text("utf-8"))
-            self.assertEqual(len(ja_fix.load_table(tmp)), 5)
+            # 2026-10-16：5 → 7。新加「お職警官 / お職」—— 真实素材里那期
+            # 还残留 4 处纠正表没覆盖的「お職」（同一个项目里「汚職大好き」翻对了、
+            # 「お職大好き」翻成"超喜欢主职"）。计数跟着改，是为了让下次再加规则时
+            # 这条断言会提醒你「表变了，去看一眼」。
+            self.assertEqual(len(ja_fix.load_table(tmp)), 7)
 
     def test_ensure_does_not_create_a_missing_root(self):
         with tempfile.TemporaryDirectory() as tmp:

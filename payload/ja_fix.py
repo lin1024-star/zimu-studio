@@ -56,10 +56,16 @@ SEED = """# 日文纠正表 —— 识别把日文听错时，翻译之前按这
 #   · 只改日文原文，中文和时间轴一个字都不动
 #   · 长短两个词都能匹配同一处时，程序按「长的优先」替换
 #
+# 保护词（2026-10-16 新增）：左右写成一样的，表示「这个词是正常的，别改」
+#   お職場 = お職場      ← 正文里的「お職場」原样保留
+#   お職   = 汚職        ← 没有上面那行，「お職場」会被这条改成「汚職場」
+# 什么时候要用：规则写的词**恰好是某个正常词的一部分**时。
+# 程序按长的优先匹配，所以保护词要比它保护的规则长，才挡得住。
+#
 # 这张表放在数据根目录，重装软件不会被清掉；批量识别和实时字幕共用同一份。
 #
 # ---------------------------------------------------------------------------
-# 下面 5 条是一次真实素材实测出来的（日语直播，同一个音被写成 5 种样子）：
+# 下面 7 条是真实素材实测出来的（日语直播，「おしょく」被写成 7 种样子）：
 # 原音都是「おしょく」，模型把「汚職」写成了几种日语里不存在的汉字组合
 # —— 同一段素材里写错 19 处、写对 17 处。
 #
@@ -75,6 +81,8 @@ SEED = """# 日文纠正表 —— 识别把日文听错时，翻译之前按这
 お食器官 = 汚職警官
 お食警官 = 汚職警官
 お食 = 汚職
+お職警官 = 汚職警官
+お職 = 汚職
 """
 
 
@@ -87,19 +95,38 @@ def parse_table(text):
     """把表文解析成 [(错的, 对的), ...]，长的优先，重复的以第一条为准。
 
     解析不了的行直接跳过——表是给人手工编辑的，写错一行不该影响其它行。
+
+    2026-10-16：`A = A`（左右一样）**不再丢掉，改成「保护词」** ——
+    它的意思是「这个词是正常的，别被更短的规则改掉」：
+
+        お職場 = お職場      ← 保护：敬语版的「工作单位」是正常词
+        お職   = 汚職        ← 真正的规则；没有上面那行，「お職場」会被改成「汚職場」
+
+    为什么需要它：替换是**子串**匹配 + 长的优先，短的规则会咬进长词里面去。
+    以前这种行被静默丢掉 ✗ —— 使用者写了保护词、以为生效了，其实没有。
+    保护词自己不改任何字（`apply_text` 里它映射到自己），只是抢先匹配、挡住短规则。
     """
-    pairs, seen = [], set()
+    pairs, seen = [], {}
     for line in (text or "").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         wrong, _, right = line.partition("=")
         wrong, right = wrong.strip(), right.strip()
-        if not wrong or not right or wrong == right or wrong in seen:
+        if not wrong or not right:
             continue
-        seen.add(wrong)
+        if wrong in seen:
+            # 同一个左边写了两次：**真规则优先于保护词**。
+            # 为什么不让"先写的赢"：手滑写一行「お食 = お食」，
+            # 就会把后面那条真规则静默取消掉 —— 又是"看不出来"的那类失败。
+            at = seen[wrong]
+            if pairs[at][1] == wrong and right != wrong:
+                pairs[at] = (wrong, right)
+            continue
+        seen[wrong] = len(pairs)
         pairs.append((wrong, right))
     # 长的先替换：お食系官 必须比 お食 先匹配上。
+    # 保护词也吃这一条：它必须比它保护的那些短词先匹配，否则挡不住。
     pairs.sort(key=lambda pair: (-len(pair[0]), pair[0]))
     return pairs
 
@@ -246,6 +273,9 @@ def apply_text(text, table):
     """按表替换一段文字，返回 (新文字, [(错的, 对的, 次数), ...])。
 
     只扫一遍：替换结果不会再被其它规则命中。
+
+    保护词（`A = A`）会参与匹配、但**不进改动清单** —— 它本来就没改字，
+    记进日志只会让人以为改了什么（实测里最怕的就是"看不出来"）。
     """
     source = text or ""
     if not source or not table:
@@ -259,7 +289,7 @@ def apply_text(text, table):
         return mapping[word]
 
     fixed = _compile(table).sub(replace, source)
-    order = [wrong for wrong, _ in table if wrong in counts]
+    order = [wrong for wrong, right in table if wrong in counts and wrong != right]
     return fixed, [(word, mapping[word], counts[word]) for word in order]
 
 
@@ -284,7 +314,10 @@ def fix_cues(cues, table=None, root=None):
         for hit in change["hits"]:
             key = (hit["wrong"], hit["right"])
             by_rule[key] = by_rule.get(key, 0) + hit["count"]
-    report = {"table_size": len(table), "cues_changed": len(changes),
+    # 条数只数**真规则**：保护词（A = A）不是规则，混进去会让人以为表变大了
+    real_rules = sum(1 for wrong, right in table if wrong != right)
+    report = {"table_size": real_rules, "protections": len(table) - real_rules,
+              "cues_changed": len(changes),
               "replacements": sum(hit["count"] for change in changes for hit in change["hits"]),
               "by_rule": by_rule, "changes": changes}
     return out, report
