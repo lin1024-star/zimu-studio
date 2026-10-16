@@ -460,11 +460,23 @@ class Translator(threading.Thread):
         self.stop_event.set()
 
 
-def load_key(root=r"D:\字幕工坊"):
+def load_key(root=None):
+    """读本机保存的 API 密钥（实时字幕翻译要用）。
+
+    2026-10-16 清掉两处**开发机残留**（这个文件最早是当独立脚本写的）：
+      · 默认值原来写死开发机的安装路径 ✗ → 改成不给就按 studio.find_root() 自己找，
+        跟程序里其它地方一致
+      · 原来往 sys.path 塞的是**开发时那个代码仓库**的目录 ✗
+        → 别人机器上根本没有这个路径。改成塞本模块所在的程序目录 ——
+        winsecret.py 就在那儿（开发时是 payload/，装好后是 app-<版本>/）
+    """
     import base64
     import json
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "repo-zimu-studio" / "payload"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     import winsecret
+    if root is None:
+        from live import studio
+        root = studio.find_root()
     path = Path(root) / winsecret.SECRET_FILE
     blob = winsecret.unprotect(base64.b64decode(path.read_text("ascii")))
     return json.loads(blob).get("key")

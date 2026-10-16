@@ -4,9 +4,12 @@
 根目录按这个顺序找：
   1. 环境变量 SUBTITLE_STUDIO_ROOT
   2. 注册表 HKCU\\Software\\SubtitleStudio 的 Root（安装器写的）
-  3. D:\\字幕工坊
-  4. %LOCALAPPDATA%\\SubtitleStudio（默认安装位置）
+  3. %LOCALAPPDATA%\\SubtitleStudio（默认安装位置）
 判断标准是「那个目录里有 settings.json」。
+
+2026-10-16：原来第 3 条写死的是开发机的安装路径 ✗ ——
+别人机器上没有那个目录，等于白写；而且把自己的路径留在了公开代码里。
+现在只按上面三条找；一条都不成立时返回默认安装位置，报错信息里照样能看出期望在哪。
 """
 import os
 import re
@@ -33,11 +36,10 @@ def find_root():
             return Path(value)
     except (OSError, ImportError):
         pass
-    for cand in (Path(r"D:\字幕工坊"),
-                 Path(os.environ.get("LOCALAPPDATA", "")) / "SubtitleStudio"):
-        if _looks_right(cand):
-            return cand
-    return Path(r"D:\字幕工坊")     # 找不到也给个位置，报错信息里能看出期望在哪
+    # 默认安装位置（安装器没有写 Root 覆盖时就在这儿）。
+    # **不写死任何人的机器路径** —— 2026-10-16 清掉了原来那条开发机路径。
+    # 一条都不成立也返回它：报错信息里能看出"期望在哪"，跟以前的行为一致。
+    return Path(os.environ.get("LOCALAPPDATA", "")) / "SubtitleStudio"
 
 
 def python_exe(root=None):
