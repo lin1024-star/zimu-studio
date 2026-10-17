@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 
 import errfmt
+import friendly_errors
 from dataclasses import asdict, dataclass
 from collections import Counter, defaultdict, deque
 from bisect import bisect_right
@@ -2159,4 +2160,10 @@ def worker(config, stop, messages):
         emit("diagnostic", {"event": "error", **error_info(exc, gpu=config.get("device") == "cuda")})
         # Do not leak request headers, secrets, or user transcript text into logs.
         blocked = write_blocked_hint(exc)
-        emit("error", blocked or f"处理失败（{type(exc).__name__}）。请检查文件权限、磁盘空间或重新打开项目后再试。")
+        if blocked:
+            emit("error", blocked)
+        else:
+            # 这里以前是「处理失败（TypeName）。请检查文件权限、磁盘空间或重新打开项目后再试。」
+            # —— 把三种完全不同的原因塞进一句话。现在按原因分开说，并给出能照着点的下一步。
+            emit("error", friendly_errors.explain(exc, context="处理任务时",
+                                                  include_message=False))

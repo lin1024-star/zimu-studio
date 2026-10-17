@@ -159,7 +159,12 @@ class EditorActions(unittest.TestCase):
             self.assertFalse(a.save_current())
         self.assertIn("信任区", box.call_args[0][1])
 
-    def test_other_write_failure_keeps_original_message(self):
+    def test_other_write_failure_is_translated_but_keeps_original_line(self):
+        """写盘失败要给人话 + 下一步，同时把程序原话留在里面（方便核对）。
+
+        2026-10-18 改：原来直接把 OSError 原文弹出来（"disk full"），
+        使用者看不出该干什么。现在翻译成可操作的话，原文放进「我实际看到的是」。
+        """
         a = self.a
         a.tree.selection_set("2")
         a.select_cue()
@@ -167,7 +172,10 @@ class EditorActions(unittest.TestCase):
         with patch("app.save_project", side_effect=OSError("disk full")), \
              patch("app.messagebox.showerror") as box:
             self.assertFalse(a.save_current())
-        self.assertEqual(box.call_args[0][1], "disk full")
+        shown = box.call_args[0][1]
+        self.assertIn("disk full", shown)           # 原话还留着
+        self.assertIn("你可以这样办", shown)         # 但多了能照着点的下一步
+        self.assertNotEqual(shown, "disk full")
 
 
 if __name__ == "__main__":

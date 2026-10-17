@@ -565,12 +565,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         self.assertIn("信任区",message)
         self.assertNotIn("PermissionError",message)
 
-    def test_job_other_failure_keeps_generic_message(self):
+    def test_job_other_failure_gets_actionable_message(self):
+        """后台任务里的意外异常：给人话 + 下一步，不许在标题里甩异常名。
+
+        2026-10-18 改：原来这里是「处理失败（RuntimeError）。请检查文件权限、磁盘空间
+        或重新打开项目后再试。」—— 三种完全不同的原因塞一句话，等于没说。
+        """
         captured=[]
         with patch("core.run_job",side_effect=RuntimeError("boom")):
             worker({},self.stop,SimpleNamespace(put=lambda item: captured.append(item)))
         message=[v for k,v in captured if k=="error"][0]
-        self.assertIn("处理失败（RuntimeError）",message)
+        self.assertIn("你可以这样办",message)
+        self.assertIn("诊断包",message)
+        self.assertNotIn("处理失败（RuntimeError）",message)
+        # 后台任务这条路不许把异常原文带出去（可能夹着请求内容 / 字幕原文）
+        self.assertNotIn("boom",message)
 
     def test_blank_srt_keeps_exact_timeline_and_carries_no_text(self):
         p=make_project(3)                       # zh 全空，空轴本来就在翻译之前用

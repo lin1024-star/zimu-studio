@@ -37,6 +37,7 @@ from dialogs import (AddCueDialog, AssStyleDialog, ChineseCheckDialog, DurationD
                      TimelineQcDialog)
 from paths import data_root
 import chinese_check
+import friendly_errors
 import ja_fix
 import timeline_qc
 
@@ -48,8 +49,12 @@ BG, PANEL, INK, MUTED, ACCENT = "#edf2f6", "#ffffff", "#182d41", "#5f7385", "#13
 
 
 def save_error_text(exc):
-    """保存失败时给使用者看的话：权限类错误换成可操作提示，其余保留原文。"""
-    return write_blocked_hint(exc) or str(exc)
+    """保存/导出失败时给使用者看的话。
+
+    顺序：先看是不是「写不进去」（被占用 / 没权限，core 里那套提示最具体），
+    其余交给 friendly_errors 按原因翻译成「下一步能照着点」的话。
+    """
+    return write_blocked_hint(exc) or friendly_errors.explain(exc, context="保存或导出时")
 
 HELP = """快速使用
 
