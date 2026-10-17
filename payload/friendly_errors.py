@@ -164,6 +164,33 @@ PLANS = {
                  "已经完成的部分都保存在项目里，不会丢"]),
 }
 
+# 短版专用的一两句「怎么办」——**不**从上面的长清单里截取。
+# 为什么：长清单一步步写得全，但截前两条会截出半截话
+# （2026-10-18 实测踩到：短版尾巴出现两句一模一样的"还不行就导出诊断包"）。
+BRIEF_STEPS = {
+    "api_key": ["到「翻译与识别设置」把密钥重新粘一遍",
+                "密钥从 platform.deepseek.com 的「API keys」复制"],
+    "balance": ["充值后再点「识别并翻译 / 继续」——已译部分不会重复花钱"],
+    "rate_limit": ["等一两分钟再点继续，别连着点"],
+    "server_down": ["等几分钟再点继续"],
+    "network": ["确认浏览器能打开 platform.deepseek.com",
+                "开着代理或 VPN 的话，先关掉或改成「全局」"],
+    "permission": ["把输出目录换到 D 盘自己新建的文件夹",
+                   "别放在系统盘的程序目录或下载目录里"],
+    "file_busy": ["关掉可能打开它的程序（Premiere / 播放器 / 预览窗格）",
+                  "或者换个输出目录"],
+    "disk_full": ["清理到至少留 2 GB", "把输出目录换到空间大的盘"],
+    "not_found": ["重新选一次素材或项目文件", "如果刚移动过，先移回去"],
+    "encoding": ["用记事本打开它，另存为 UTF-8 再导入"],
+    "memory": ["关掉别的程序（浏览器标签最占内存）", "识别模型换成 small"],
+    "gpu": ["先把设备改成 CPU，照样能识别（慢一点）",
+            "想用显卡就点「启用显卡加速」重下一次"],
+    "media": ["先确认素材本身能正常播放", "转成 mp4 或 wav 再试"],
+    "file_io": ["换一个输出目录（比如 D 盘）", "确认文件没被别的程序占用"],
+    "internal": ["点「诊断与资源 → 导出诊断包」，把 ZIP 发来"],
+    "unknown": ["先重试一次，偶发问题第二次就过去了"],
+}
+
 
 def _headline_steps(key):
     return PLANS.get(key, PLANS["unknown"])
@@ -249,10 +276,13 @@ def brief(exc):
         return "任务已停止，已完成的部分都保留。"
     if type_name in ("UserError", "ResponseError"):
         return text if text else "处理没有完成。"
-    headline, steps = _headline_steps(_classify(exc))
+    key = _classify(exc)
+    headline, _ = _headline_steps(key)
+    steps = BRIEF_STEPS.get(key, BRIEF_STEPS["unknown"])
     lines = [headline]
-    first_two = [step.rstrip("。") for step in steps[:2]]
-    if first_two:
-        lines.append("你可以这样办：" + "；".join(first_two) + "。")
-    lines.append("还不行：点「诊断与资源 → 导出诊断包」，把 ZIP 发来。")
+    if steps:
+        lines.append("你可以这样办：" + "；".join(step.rstrip("。") for step in steps) + "。")
+    # 已经说过去哪儿发诊断包的，就不再重复一句（短版最忌啰嗦）
+    if not any("诊断包" in step for step in steps):
+        lines.append("还不行：点「诊断与资源 → 导出诊断包」，把 ZIP 发来。")
     return "\n".join(lines)

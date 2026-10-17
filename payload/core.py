@@ -134,7 +134,10 @@ def load_project(path):
             ids.add(c.id)
         return p
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
-        raise UserError("无法读取项目。请打开本程序保存的 project.json 文件。") from exc
+        raise UserError(
+            "这个文件不是本软件保存的项目（可能选错了，或者文件已经损坏）。\n\n"
+            "你可以这样办：用「打开项目 / SRT…」选本软件导出的 project.json；"
+            "如果只是想看字幕，直接打开 .srt 文件也行。") from exc
 
 
 def fingerprint(path):

@@ -167,6 +167,42 @@ class BriefTests(unittest.TestCase):
     def test_brief_for_cancelled_is_a_notice_not_an_error(self):
         self.assertIn("已停止", fe.brief(Cancelled("stop")))
 
+    def test_brief_does_not_repeat_the_diagnostics_line(self):
+        """实测踩到过：短版尾巴出现两句一模一样的「还不行就导出诊断包」。
+
+        原因是从长清单里截前两条截出了半截话。现在短版有自己的一套短步骤。
+        """
+        for exc in (RuntimeError("x"), KeyError("k"), TimeoutError("t")):
+            text = fe.brief(exc)
+            self.assertLessEqual(text.count("导出诊断包"), 1, text)
+
+    def test_brief_has_a_fallback_line_when_steps_dont_mention_diagnostics(self):
+        text = fe.brief(TimeoutError("t"))
+        self.assertIn("先", text)
+        self.assertIn("还不行", text)
+
+
+class WiringTests(unittest.TestCase):
+    """接线测试：真实路径上真的用到这一层了吗（不是只有模块自己测得好）。"""
+
+    def test_gpu_worker_uses_brief(self):
+        """显卡组件那条路（gpu_runtime.setup_worker）也要说人话。"""
+        import threading
+        from types import SimpleNamespace
+        from unittest import mock
+
+        import gpu_runtime
+
+        box = []
+        with mock.patch.object(gpu_runtime, "prepare_gpu",
+                               side_effect=RuntimeError("cuda init failed")):
+            gpu_runtime.setup_worker(threading.Event(),
+                                     SimpleNamespace(put=lambda item: box.append(item)))
+        errors = [v for k, v in box if k == "error"]
+        self.assertTrue(errors)
+        self.assertIn("显卡", errors[0])
+        self.assertNotIn("RuntimeError", errors[0])
+
 
 def _dialogs_leaking_type_name(source):
     """找出「用户能看到的提示」里还在甩异常类名的调用。
