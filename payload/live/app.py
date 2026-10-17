@@ -234,8 +234,8 @@ class LiveApp:
             self.capture = SystemAudioCapture(self.ring, source_id=source_id)
             self.capture.start()
         except Exception as exc:  # noqa: BLE001
-            log(f"换音源失败：{exc}")
-            self.out.put(("status", f"换音源失败：{exc}"))
+            log(f"换音源失败：{type(exc).__name__}: {exc}")
+            self.out.put(("status", f"换音源失败：{friendly_errors.hint(exc)}"))
             return
         save_source_id(source_id)
         label = source_label(source_id)
@@ -324,8 +324,8 @@ class LiveApp:
                 self.out.put(("warn", f"原来的音源「{bad}」用不了，已自动改回默认扬声器。"
                                       f"想换别的，点右上角「音源」。"))
             if getattr(self.capture, "error", None):
-                log(f"抓声音失败：{self.capture.error}")
-                self.out.put(("fatal", f"抓声音失败：{self.capture.error}"))
+                log(f"抓声音失败：{type(self.capture.error).__name__}: {self.capture.error}")
+                self.out.put(("fatal", friendly_errors.brief(self.capture.error)))
                 return
             log(f"音频来源：{self.capture.device}（{source_label(self.source_id)}）")
             log(f"术语表：{len(self.current_glossary())} 字")

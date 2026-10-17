@@ -41,7 +41,13 @@ def main():
         rows += [f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}" for frame in traceback.extract_tb(exc.__traceback__)]
         (root / "startup-error.txt").write_text("\n".join(rows), encoding="utf-8")
         if sys.platform == "win32":
-            ctypes.windll.user32.MessageBoxW(0, "软件启动失败（" + type(exc).__name__ + "）。请打开安装器点“一键安装 / 修复”，或点“导出安装诊断”后反馈。", "字幕工坊", 16)
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                "软件没启动起来。\n\n"
+                "你可以这样办：打开安装器点「一键安装 / 修复」；还不行就点安装器里的"
+                "「导出安装诊断」，把文件发来。\n"
+                "详细信息已经写进程序目录的 startup-error.txt。",
+                "字幕工坊", 16)
         raise SystemExit(1)
     finally:
         if lock:

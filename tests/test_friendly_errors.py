@@ -139,5 +139,97 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(fe.hint("抓声音失败：没有默认设备"), "抓声音失败：没有默认设备")
 
 
+class BriefTests(unittest.TestCase):
+    """短版：学朋友那种「两三行看完就知道干什么」的写法。
+
+    小弹窗用它（打开 / 还原 / 保存 / 启动实时字幕 / 显卡组件）；
+    处理任务失败那种大弹窗仍用完整版，因为「我实际看到的是」不能丢。
+    """
+
+    def test_brief_is_short(self):
+        text = fe.brief(PermissionError(13, "拒绝访问"))
+        self.assertLessEqual(len(text.splitlines()), 4, text)
+        self.assertLess(len(text), 260, text)
+
+    def test_brief_has_the_three_parts(self):
+        text = fe.brief(TimeoutError("x"))
+        self.assertIn("没连上", text)          # 一句话：什么事
+        self.assertIn("你可以这样办", text)
+        self.assertIn("诊断包", text)          # 还不行怎么办
+
+    def test_brief_never_shows_exception_name(self):
+        for exc in (TimeoutError("x"), MemoryError(), KeyError("k"), OSError(28, "满")):
+            self.assertNotIn(type(exc).__name__, fe.brief(exc))
+
+    def test_brief_passes_through_chinese_errors(self):
+        self.assertEqual(fe.brief(UserError("字幕为空，请先识别。")), "字幕为空，请先识别。")
+
+    def test_brief_for_cancelled_is_a_notice_not_an_error(self):
+        self.assertIn("已停止", fe.brief(Cancelled("stop")))
+
+
+def _dialogs_leaking_type_name(source):
+    """找出「用户能看到的提示」里还在甩异常类名的调用。
+
+    覆盖两类：messagebox.showerror / MessageBoxW（弹窗），
+    以及 emit("error"/"fatal", …)（这串会一路显示到「任务未完成」弹窗里）。
+    """
+    import ast
+
+    tree = ast.parse(source)
+    bad = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = getattr(func, "attr", None) or getattr(func, "id", None)
+        segment = ast.get_source_segment(source, node) or ""
+        if name in ("showerror", "MessageBoxW") and "__name__" in segment:
+            bad.append(node.lineno)
+        if name == "emit" and node.args and "__name__" in segment:
+            first = ast.get_source_segment(source, node.args[0]) or ""
+            if "error" in first or "fatal" in first:
+                bad.append(node.lineno)
+    return bad
+
+
+class NoRawTypeNameInUiTests(unittest.TestCase):
+    """回归护栏：产品代码里不许再有「甩异常类名给人看」的提示。
+
+    2026-10-18 清了一轮（实时字幕启动/导出、显卡组件、启动失败等），
+    这条测试守着，免得哪天又写回去。
+    """
+
+    def test_product_code_has_no_type_names_in_user_messages(self):
+        import ast  # noqa: F401  （给下面的反证用）
+        payload = Path(__file__).resolve().parents[1] / "payload"
+        problems = []
+        for path in sorted(payload.rglob("*.py")):
+            if "lib" in path.parts or "__pycache__" in path.parts:
+                continue
+            try:
+                text = path.read_text("utf-8")
+                for line in _dialogs_leaking_type_name(text):
+                    problems.append(f"{path.relative_to(payload)}:{line}")
+            except (OSError, UnicodeError, SyntaxError):
+                continue
+        self.assertEqual(problems, [], "用户能看到的提示里还在甩异常类名：\n  " + "\n  ".join(problems))
+
+    def test_the_scanner_actually_catches_a_planted_leak(self):
+        """反证：造一段明知故犯的代码，扫描器必须抓到（否则它会静默永远通过）。"""
+        planted = (
+            "import messagebox as mb\n"
+            "def f(exc):\n"
+            "    mb.showerror('失败', f'{type(exc).__name__}: {exc}')\n"
+        )
+        self.assertTrue(_dialogs_leaking_type_name(planted))
+        clean = (
+            "import messagebox as mb\n"
+            "def f(exc):\n"
+            "    mb.showerror('失败', friendly_errors.brief(exc))\n"
+        )
+        self.assertEqual(_dialogs_leaking_type_name(clean), [])
+
+
 if __name__ == "__main__":
     unittest.main()

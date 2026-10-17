@@ -721,10 +721,7 @@ class Application(tk.Tk):
             self.live.start()
         except Exception as exc:          # noqa: BLE001
             self.log(f"实时字幕启动失败：{type(exc).__name__}: {exc}")
-            messagebox.showerror("实时字幕启动失败",
-                                 f"{type(exc).__name__}: {exc}\n\n"
-                                 "常见原因：没有可用的识别模型（先点「一键安装 / 修复」）、"
-                                 "或系统不允许录制声音。")
+            messagebox.showerror("实时字幕启动失败", friendly_errors.brief(exc))
             return
         self.live_state.configure(text="状态：运行中")
         self.live_start_btn.configure(state="disabled")
@@ -816,7 +813,8 @@ class Application(tk.Tk):
             with open(path, "w", encoding="utf-8", newline="") as handle:
                 handle.write(body)
         except Exception as exc:          # noqa: BLE001
-            messagebox.showerror("导出失败", f"{type(exc).__name__}: {exc}")
+            self.log(f"实时字幕导出失败：{type(exc).__name__}: {exc}")
+            messagebox.showerror("导出失败", friendly_errors.brief(exc))
             return
         self.log(f"实时字幕已导出 {len(cues)} 句 → {path}")
         messagebox.showinfo("导出好了", f"导出 {len(cues)} 句：\n{path}")
@@ -1072,7 +1070,7 @@ class Application(tk.Tk):
                     self.glossary.insert("1.0", profile.get("glossary", ""))
                 self.status_var.set("项目已载入，可编辑、导出或继续翻译。")
             except UserError as exc:
-                messagebox.showerror("无法打开", str(exc))
+                messagebox.showerror("无法打开", friendly_errors.brief(exc))
 
     def import_subtitles(self, path):
         if self.busy:
@@ -1798,7 +1796,10 @@ class Application(tk.Tk):
             self.proc = None
             self.current_config = None
             self.set_busy(False)
-            messagebox.showerror("无法启动", "无法启动处理进程。请关闭程序后通过 start.bat 重新打开。")
+            messagebox.showerror("无法启动",
+                                 "无法启动处理进程（多半是程序文件被改动，或被杀毒软件拦住）。\n\n"
+                                 "你可以这样办：重新双击桌面「字幕工坊」图标打开；"
+                                 "还不行就点「诊断与资源 → 导出诊断包」，把 ZIP 发来。")
 
     def stop_job(self):
         if self.proc and self.stop_time is None:
@@ -2208,7 +2209,7 @@ class Application(tk.Tk):
         try:
             save_project(self.project_path, updated)
         except (OSError, UserError) as exc:
-            messagebox.showerror("还原失败", str(exc))
+            messagebox.showerror("还原失败", friendly_errors.brief(exc))
             return
         self.reload_project(self.project_path)
         self.log(f"已还原整理前的轴：{len(raw)} 条。")

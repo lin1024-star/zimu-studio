@@ -228,3 +228,31 @@ def hint(exc_or_text):
         return "已停止"
     headline, _ = _headline_steps(_classify(exc_or_text))
     return headline.rstrip("。")
+
+
+def brief(exc):
+    """短版（小弹窗用）：一句话 + 一句「怎么办」+ 一句「还不行怎么办」。
+
+    ## 为什么要短版（2026-10-18，学朋友那个下载器）
+
+    他的报错观感是「站拒绝了请求 → 请稍后重试 → 如果仍然失败，就在设置里选已登录的浏览器」，
+    两三行，看完就知道干什么。我们的完整版（标题 + 我实际看到的是 + 你可以这样办）信息全，
+    但**弹在小窗口里像一篇说明书**；日常那些"原因清楚、动作单一"的错不需要那么多。
+
+    所以分工：
+    - `brief()`   小弹窗：打开 / 还原 / 保存 / 启动实时字幕 / 显卡组件…
+    - `explain()` 处理任务失败那种大弹窗：可能要看现场，「我实际看到的是」不能丢
+    """
+    text = redact(str(exc)).strip()
+    type_name = type(exc).__name__
+    if type_name == "Cancelled":
+        return "任务已停止，已完成的部分都保留。"
+    if type_name in ("UserError", "ResponseError"):
+        return text if text else "处理没有完成。"
+    headline, steps = _headline_steps(_classify(exc))
+    lines = [headline]
+    first_two = [step.rstrip("。") for step in steps[:2]]
+    if first_two:
+        lines.append("你可以这样办：" + "；".join(first_two) + "。")
+    lines.append("还不行：点「诊断与资源 → 导出诊断包」，把 ZIP 发来。")
+    return "\n".join(lines)
