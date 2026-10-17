@@ -2065,6 +2065,7 @@ class Application(tk.Tk):
         cues = timeline_qc.cues_from_rows(self.project["cues"])
         result = timeline_qc.check_timeline(cues, duration=self._timeline_duration())
         self.log(timeline_qc.summarize(result))
+        self.log(timeline_qc.bilibili_summary(result.get("bilibili")))
         for kind, count in sorted(result["counts"].items(), key=lambda kv: -kv[1]):
             title = timeline_qc.KINDS[kind][0]
             level = timeline_qc.SEVERITY_LABEL[timeline_qc._severity(kind)]
@@ -2105,16 +2106,17 @@ class Application(tk.Tk):
         self.log(f"已跳到第 {cue_id} 条 —— 下面就显示它的原文和中文，改完点「保存此条修改」。")
 
     def fix_timeline(self, issues):
-        """一键修安全的项：时间倒着走、叠字、间隙过小。改前自动备份。"""
+        """一键修安全的项：时间倒着走、叠字、间隙过小、太短补到 0.5 秒。改前自动备份。"""
         count = sum(1 for it in issues if it.get("fixable"))
         if not count:
             return False
         if not messagebox.askyesno(
                 "一键修时间轴",
                 f"要修 {count} 处只涉及时间的毛病吗？\n\n"
-                "· 只修：时间倒着走、两条叠在一起、间隙太小会闪\n"
-                "· 不修：太短、太长、读不完 —— 那些要重排句子，得你自己看\n"
-                "· 文字和译文一个字都不会动\n\n"
+                "· 只修：时间倒着走、两条叠在一起、间隙太小会闪、太短补到 0.5 秒\n"
+                "· 不修：太长、读不完、单行超过 300 字 —— 那些要重排句子，得你自己看\n"
+                "· 文字和译文一个字都不会动\n"
+                "· 太短那条如果后面紧挨着下一条，补不了就保持原样\n\n"
                 "改之前会自动备份一份项目文件。"):
             return False
         try:
@@ -2127,14 +2129,17 @@ class Application(tk.Tk):
             return False
         self.reload_project(self.project_path)
         self.status_var.set(f"时间轴已修 {len(changes)} 处；原文与译文未改动。")
-        self.log(f"时间轴体检：修了 {len(changes)} 处（倒序 / 叠字 / 闪帧）。")
+        self.log(f"时间轴体检：修了 {len(changes)} 处（倒序 / 叠字 / 闪帧 / 太短补齐）。")
         self.log("修改前项目备份：" + str(backup))
         remaining = timeline_qc.check_timeline(
             timeline_qc.cues_from_rows(self.project["cues"]), duration=self._timeline_duration())
         self.log(timeline_qc.summarize(remaining))
+        self.log(timeline_qc.bilibili_summary(remaining.get("bilibili")))
         messagebox.showinfo("修好了",
                             f"修了 {len(changes)} 处。\n\n" + timeline_qc.summarize(remaining) +
-                            "\n\n超短、超长、读不完这些没动 —— 那些要重排句子，请看「时间轴体检」的列表。")
+                            "\n\n" + timeline_qc.bilibili_summary(remaining.get("bilibili")) +
+                            "\n\n太长、读不完、单行超过 300 字这些没动 —— "
+                            "那些要重排句子或拆条，请看「时间轴体检」的列表。")
         return True
 
     def show_axis_review(self):

@@ -518,6 +518,15 @@ class TimelineQcDialog(tk.Toplevel):
             tk.Label(head, text="　（双击任意一行可以跳到那一条）",
                      fg="#666666").pack(side="left")
 
+        # B站 交付结论单独一行：使用者最关心的就是"这份能不能交"。
+        # 只按 B站 官方写明的三条判（0.5 秒 / 不重叠 / 单行 300 字），
+        # 不把 Netflix 的每行字数混进来（见 timeline_qc.BILIBILI 的注释）。
+        bili = result.get("bilibili") or {}
+        if bili:
+            tk.Label(self, text=timeline_qc.bilibili_summary(bili),
+                     fg="#0b6b3a" if bili.get("ok") else "#a4421a",
+                     justify="left", wraplength=820).pack(anchor="w", pady=(0, 6))
+
         if not self.issues:
             ttk.Label(self, text="没有发现问题 —— 这份时间轴可以直接导出。",
                       style="Muted.TLabel").pack(anchor="w", pady=20)
@@ -550,7 +559,8 @@ class TimelineQcDialog(tk.Toplevel):
         if fixable and on_fix is not None:
             ttk.Button(btns, text=f"一键修能修的（{fixable} 处）",
                        command=self._fix).pack(side="right", padx=8)
-            ttk.Label(btns, text="只修叠字、闪帧、时间倒着走；\n超短、超长、读不完要你自己看。",
+            ttk.Label(btns, text="只修叠字、闪帧、时间倒着走、太短补到 0.5 秒；\n"
+                                 "太长、读不完、单行超 300 字要你自己看。",
                       style="Muted.TLabel", justify="left").pack(side="left")
 
     def _selected_id(self):

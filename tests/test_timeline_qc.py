@@ -157,7 +157,8 @@ class CheckTests(unittest.TestCase):
     def test_every_kind_has_explanation(self):
         """每种问题都要有中文说明，界面直接显示 —— 不能漏。"""
         for kind in ("reversed", "empty", "overlap", "tiny_gap", "too_short",
-                     "too_long", "too_fast", "long_gap", "head_silence", "tail_silence"):
+                     "too_long", "too_fast", "too_many_chars", "long_gap",
+                     "head_silence", "tail_silence"):
             self.assertIn(kind, qc.KINDS)
             title, advice = qc.KINDS[kind]
             self.assertTrue(title and advice, kind)
@@ -208,12 +209,50 @@ class FixSafeTests(unittest.TestCase):
         fixed, _ = qc.fix_safe(cues)
         self.assertEqual([c.id for c in fixed], [7, 9])
 
-    def test_too_short_and_too_long_are_not_touched(self):
-        """这两类要重排句子，机器不许自动改。"""
-        cues = make((1, 0.0, 0.2, "あ", "啊"), (2, 5.0, 20.0, "い", "一"))
+    def test_too_long_is_never_touched(self):
+        """太长要重排句子，机器不许自动改。"""
+        cues = make((1, 0.0, 2.0, "あ", "啊"), (2, 5.0, 20.0, "い", "一"))
         fixed, changes = qc.fix_safe(cues)
         self.assertEqual(changes, [])
-        self.assertEqual([(c.start, c.end) for c in fixed], [(0.0, 0.2), (5.0, 20.0)])
+        self.assertEqual([(c.start, c.end) for c in fixed], [(0.0, 2.0), (5.0, 20.0)])
+
+    def test_short_cue_is_extended_to_half_second(self):
+        """B站官方（2026-07-24）：单条字幕不宜短于 0.5 秒 —— 后面有空就自动补齐。"""
+        cues = make((1, 0.0, 0.2, "あ", "啊"), (2, 5.0, 20.0, "い", "一"))
+        fixed, changes = qc.fix_safe(cues)
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["kind"], "too_short")
+        self.assertAlmostEqual(fixed[0].end, 0.5, places=6)
+        self.assertNotIn("too_short", qc.check_timeline(fixed)["counts"])
+
+    def test_short_cue_extends_only_as_far_as_room_allows(self):
+        """后面只有一点空：能补多少补多少，绝不盖住下一条。"""
+        cues = make((1, 0.0, 0.2, "あ", "啊"), (2, 0.3, 2.0, "い", "一"))
+        fixed, changes = qc.fix_safe(cues)
+        self.assertAlmostEqual(fixed[0].end, 0.22, places=6)
+        self.assertGreaterEqual(fixed[1].start - fixed[0].end,
+                                qc.LIMITS["min_gap"] - 1e-9)
+        self.assertIn("too_short", [c["kind"] for c in changes])
+
+    def test_short_cue_with_no_room_is_left_alone(self):
+        """后面紧挨着就补不了 —— 不许拿别人的时间凑自己的 0.5 秒。"""
+        cues = make((1, 0.0, 0.2, "あ", "啊"), (2, 0.2, 2.0, "い", "一"))
+        fixed, changes = qc.fix_safe(cues)
+        self.assertLess(fixed[0].end, 0.5)
+        self.assertGreaterEqual(fixed[1].start, fixed[0].end)
+        self.assertNotIn("too_short", [c["kind"] for c in changes])
+
+    def test_short_extension_respects_duration(self):
+        """最后一条补时长不能超过片长。"""
+        cues = make((1, 9.9, 10.0, "あ", "啊"))
+        fixed, _ = qc.fix_safe(cues, duration=10.05)
+        self.assertLessEqual(fixed[0].end, 10.05 + 1e-9)
+
+    def test_short_extension_is_idempotent(self):
+        cues = make((1, 0.0, 0.2, "あ", "啊"), (2, 5.0, 7.0, "い", "一"))
+        once, _ = qc.fix_safe(cues)
+        twice, changes2 = qc.fix_safe(once)
+        self.assertEqual(changes2, [])
 
     def test_clean_timeline_is_untouched(self):
         cues = make((1, 0.0, 2.0, "あ", "啊"), (2, 2.5, 4.0, "い", "一"))
@@ -235,6 +274,65 @@ class FixSafeTests(unittest.TestCase):
         fixed, changes = qc.fix_safe(cues)
         self.assertEqual(len(changes), 1)
         self.assertLessEqual(fixed[0].end, fixed[1].start)
+
+
+class BilibiliTests(unittest.TestCase):
+    """B站 交付体检（2026-10-18 加）。
+
+    只按 B站 官方写明的三条判：单条不短于 0.5 秒、时间段不重叠、单行不超 300 字。
+    网飞的"每行 16 字 / 每秒 9 字"**不**参与这个判定 —— 最后一条测试就守着这条界线。
+    """
+
+    def test_clean_timeline_can_be_uploaded(self):
+        cues = make((1, 0.0, 2.0, "こんにちは", "你好"),
+                    (2, 2.5, 4.5, "はい", "是"))
+        audit = qc.bilibili_audit(cues)
+        self.assertTrue(audit["ok"])
+        self.assertEqual(audit["items"], [])
+        self.assertIn("可以交", qc.bilibili_summary(audit))
+
+    def test_short_cue_blocks_upload(self):
+        audit = qc.bilibili_audit(make((1, 0.0, 0.3, "あ", "啊")))
+        self.assertFalse(audit["ok"])
+        self.assertEqual(audit["short"], [1])
+        self.assertIn("短于 0.5 秒", "、".join(audit["items"]))
+
+    def test_overlap_blocks_upload(self):
+        audit = qc.bilibili_audit(make((1, 0.0, 3.0, "あ", "啊"),
+                                       (2, 2.0, 4.0, "い", "一")))
+        self.assertFalse(audit["ok"])
+        self.assertEqual(audit["overlap"], 1)
+
+    def test_300_chars_is_ok_301_is_not(self):
+        ok = qc.bilibili_audit(make((1, 0.0, 30.0, "あ" * 300, "")))
+        self.assertTrue(ok["ok"])
+        bad = qc.bilibili_audit(make((1, 0.0, 30.0, "あ" * 301, "")))
+        self.assertFalse(bad["ok"])
+        self.assertEqual(bad["too_many"], [1])
+
+    def test_bilingual_counts_each_line(self):
+        """混合版是「原文一行 + 中文一行」，两行都要量 —— 只量显示的那行会漏。"""
+        audit = qc.bilibili_audit(make((1, 0.0, 30.0, "あ" * 20, "中" * 301)))
+        self.assertFalse(audit["ok"])
+        self.assertEqual(audit["too_many"], [1])
+
+    def test_timeline_check_carries_bilibili_result(self):
+        result = qc.check_timeline(make((1, 0.0, 0.2, "あ", "啊")))
+        self.assertIn("bilibili", result)
+        self.assertFalse(result["bilibili"]["ok"])
+
+    def test_line_over_300_chars_is_reported_as_error(self):
+        result = qc.check_timeline(make((1, 0.0, 30.0, "あ" * 301, "")))
+        self.assertIn("too_many_chars", result["counts"])
+        issue = [i for i in result["issues"] if i["kind"] == "too_many_chars"][0]
+        self.assertEqual(issue["severity"], "error")
+
+    def test_netflix_numbers_are_not_used_for_delivery(self):
+        """每行 16 字 / 每秒 9 字是网飞口径，不能拿来卡 B站 交付。"""
+        # 22 个中文字、2 秒 → 11 字/秒（超了网飞 9 字/秒），但离 B站 300 字远得很
+        cues = make((1, 0.0, 2.0, "短", "这是一个超过十六个字但远不到三百字的中文句子"))
+        self.assertIn("too_fast", qc.check_timeline(cues)["counts"])
+        self.assertTrue(qc.bilibili_audit(cues)["ok"])
 
 
 class SaveFixTests(unittest.TestCase):
