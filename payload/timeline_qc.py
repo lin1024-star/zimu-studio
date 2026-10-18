@@ -20,6 +20,17 @@
 **结论**：不引入额外依赖（torch 约 2.5 GB）的前提下，在 BGM 铺满的素材上
 做不了"和音频对齐校验"。所以改做这个 —— **不碰音频，只查字幕本身的硬伤**。
 这几项才是真正会让成片出事故的：叠字、闪帧、看不清、读不完。
+
+## 2026-10-18：按 B站 官方要求加了「交付体检」
+
+B站官方（哔哩哔哩客服《UP主投稿功能系列·稿件字幕管理篇》）写明三条：
+**只收 srt / 单行最多 300 字 / 单条不宜短于 0.5 秒 / 时间段尽量不要重叠**。
+所以这里多了 `bilibili_audit()` —— 它只回答一个问题：**这份能不能交**。
+同时「一键修」现在会把太短的补到 0.5 秒（只往后延结束时间，不碰文字；
+后面紧挨着就如实不补）。
+
+Netflix 的"每行 16 字 / 9 字每秒"**不在** B站 条文里，因此不作为交付判据，
+只保留在时间轴体检的"读不完"那一项里当建议（两者别混着用）。
 """
 from pathlib import Path
 
@@ -28,14 +39,32 @@ from polish import normalize_text
 
 # 各类阈值。都可以在调用时覆盖。
 LIMITS = {
-    "min_duration": 0.5,     # 短于这个来不及看（约 12 帧 @24fps）
+    "min_duration": 0.5,     # 短于这个来不及看（约 12 帧 @24fps）；B站官方同款下限
     "max_duration": 7.0,     # 长于这个一直挂在屏幕上，累
     "min_gap": 0.08,         # 相邻两条间隙小于这个会闪一下（约 2 帧）
     "max_cps": 9.0,          # 每秒字符数上限；中文常规上限
+    "max_line_chars": 300,   # 单行字数上限：B站上传就是卡 300 字
     "long_gap": 5.0,         # 这么久没有字幕，可能漏了句子
     "head_silence": 10.0,    # 开头这么久没字幕
     "tail_silence": 30.0,    # 结尾这么久没字幕
     "min_keep": 0.10,        # 修重叠时，前一条至少留这么久，免得修没了
+}
+
+# —— B站官方投稿要求（2026-10-18 查证，原始出处与截图见桌面资料《今晚成果_20261018》）——
+# 来源：哔哩哔哩客服《UP主投稿功能系列·稿件字幕管理篇》
+#   https://www.bilibili.com/opus/1228554809298124881
+#   · 支持 srt 格式字幕文件上传
+#   · 视频单行字幕文字存在上限，最多 300 字
+#   · 字幕时间段尽量不要重叠，单条字幕展示时长不宜短于 0.5 秒
+#
+# 注意：B站**没有**规定"每行几个字"，也没有规定"阅读速度" —— 那是 Netflix 的口径
+# （每行 16 字 / 9 字每秒）。所以"能不能交 B站"只按上面三条判，
+# 不把 Netflix 的加进来充数（两者混用会让人以为超了字数是违规）。
+BILIBILI = {
+    "min_duration": 0.5,       # 官方：不宜短于 0.5 秒
+    "max_line_chars": 300,     # 官方：单行最多 300 字
+    "allow_overlap": False,    # 官方：尽量不要重叠
+    "format": "srt",           # 官方：只收 srt
 }
 
 SEVERITY_ORDER = {"error": 0, "warn": 1, "info": 2}
@@ -47,9 +76,10 @@ KINDS = {
     "empty": ("没有文字", "这条没有任何文字，空条会占着时间轴。"),
     "overlap": ("和上一条叠在一起", "两条同时显示会糊在一起；ASS 里会变成两行挤着。"),
     "tiny_gap": ("间隙太小会闪", "和下一条挨得太近，画面会闪一下，看着像抖动。"),
-    "too_short": ("太短来不及看", "一闪而过，观众看不清。"),
+    "too_short": ("太短来不及看", "一闪而过，观众看不清。B站的建议下限是每条 0.5 秒 —— 后面有空就点「一键修」补上。"),
     "too_long": ("挂得太久", "一直留在屏幕上，观众会以为卡住了。"),
     "too_fast": ("读不完", "字数太多、时间太短，按正常阅读速度看不完。"),
+    "too_many_chars": ("单行超过 300 字", "B站上传上限是单行 300 字，超了可能被截断或传不上去；建议拆成两条。"),
     "long_gap": ("这段一直没字幕", "可能是漏识别，也可能主播真的停了几秒 —— 建议听一下。"),
     "head_silence": ("开头很久没字幕", "片头这么久没有字幕，确认是有意留白。"),
     "tail_silence": ("结尾很久没字幕", "片尾这么久没有字幕，确认后面没内容了。"),
@@ -89,6 +119,20 @@ def _chars(text):
     return len(normalize_text(text))
 
 
+def _extend_room(cue, nxt, lim, duration=None):
+    """太短的那条最多能往后延到哪：不许盖住下一条，也不许超过片长。
+
+    补不补得上，取决于"后面有没有空"。补不动（下面紧挨着）就如实说补不了，
+    不许为了凑够 0.5 秒去压别人的时间 —— 那等于用一条的错换另一条的错。
+    """
+    want = cue.start + lim["min_duration"]
+    if nxt is not None:
+        want = min(want, nxt.start - lim["min_gap"])
+    if duration:
+        want = min(want, float(duration))
+    return want
+
+
 def check_timeline(cues, duration=None, limits=None):
     """全量自查。**只报告，不改任何东西。**
 
@@ -118,9 +162,12 @@ def check_timeline(cues, duration=None, limits=None):
             add("empty", cue, f"第 {cue.id} 条：{cue.start:.2f} → {cue.end:.2f}"
                               f"「{shown}」去掉标点后没有内容", False)
         if span < lim["min_duration"]:
+            nxt = cues[i + 1] if i + 1 < len(cues) else None
+            can = _extend_room(cue, nxt, lim, duration) > cue.end + 1e-9
             add("too_short", cue,
-                f"第 {cue.id} 条只有 {span:.2f} 秒（建议 ≥ {lim['min_duration']:.1f} 秒）"
-                f"「{text[:20]}」", False)
+                f"第 {cue.id} 条只有 {span:.2f} 秒（B站建议 ≥ {lim['min_duration']:.1f} 秒）"
+                f"「{text[:20]}」" + ("，后面有空可以自动补足" if can else "，后面紧挨着，补不了"),
+                can)
         if span > lim["max_duration"]:
             add("too_long", cue,
                 f"第 {cue.id} 条有 {span:.1f} 秒（建议 ≤ {lim['max_duration']:.0f} 秒）"
@@ -135,6 +182,19 @@ def check_timeline(cues, duration=None, limits=None):
                     f"第 {cue.id} 条 {span:.1f} 秒里 {n_chars} 字"
                     f"（{cps:.1f} 字/秒，建议 ≤ {lim['max_cps']:.0f}）"
                     f"按{which}算「{reading[:20]}」", False)
+
+        # B站上传上限：单行 300 字。混合版是「原文一行 + 中文一行」，
+        # 所以要分别量两行，不能只量屏幕上最后显示的那一行。
+        cap = lim.get("max_line_chars")
+        if cap:
+            over = [(label, value) for label, value in
+                    (("原文", clean(cue.source or "")), ("中文", clean(cue.zh or "")))
+                    if len(value) > cap]
+            if over:
+                detail = "、".join(f"{label} {len(value)} 字" for label, value in over)
+                add("too_many_chars", cue,
+                    f"第 {cue.id} 条 {detail}（B站单行上限 {cap} 字）"
+                    f"「{over[0][1][:20]}」", False)
 
         if i + 1 < len(cues):
             nxt = cues[i + 1]
@@ -170,30 +230,78 @@ def check_timeline(cues, duration=None, limits=None):
     for it in issues:
         counts[it["kind"]] = counts.get(it["kind"], 0) + 1
     return {"issues": issues, "counts": counts,
-            "cues": len(cues), "duration": duration}
+            "cues": len(cues), "duration": duration,
+            "bilibili": bilibili_audit(cues, lim)}
 
 
 def _severity(kind):
-    if kind in ("reversed", "empty", "overlap"):
+    if kind in ("reversed", "empty", "overlap", "too_many_chars"):
         return "error"
     if kind in ("tiny_gap", "too_short", "too_long", "too_fast"):
         return "warn"
     return "info"
 
 
-def fix_safe(cues, limits=None):
-    """只修「怎么修都不会修错」的三类：时间倒序、重叠、间隙过小。
+def bilibili_audit(cues, limits=None):
+    """按 B站 官方投稿要求体检：这份字幕能不能直接交上去。
 
-    **超短 / 超长 / 读不完 一律不自动动** —— 那需要重排句子，
-    机器做只会把内容搞乱，必须人看一眼。
+    只查 B站 自己写明的三条（srt 是导出格式的事，不在时间轴里查）：
+      1. 单条时长不短于 0.5 秒
+      2. 时间段不重叠
+      3. 单行不超过 300 字
 
-    返回 (新列表, 改动列表)。改动列表里每条都有 前→后，供日志展示。
+    为什么要单独有这么一张"交付体检"：时间轴体检是"尽量做得好"（阅读速度、
+    最长时长、成段漏句都管），B站 这张只回答一个问题 —— **能不能交**。
+    所以它只认 B站 官方写明的数，不把 Netflix 的每行字数/阅读速度混进来。
     """
     lim = dict(LIMITS)
     lim.update(limits or {})
-    out = []
-    changes = []
-    for cue in sorted(cues, key=lambda c: (c.start, c.id)):
+    ordered = sorted(cues, key=lambda c: (c.start, c.id))
+    short, too_many = [], []
+    overlap = 0
+    for i, cue in enumerate(ordered):
+        if cue.end - cue.start < lim["min_duration"]:
+            short.append(cue.id)
+        if i + 1 < len(ordered) and ordered[i + 1].start < cue.end:
+            overlap += 1
+        longest = max(len(clean(cue.source or "")), len(clean(cue.zh or "")))
+        if longest > lim["max_line_chars"]:
+            too_many.append(cue.id)
+    items = []
+    if short:
+        items.append(f"{len(short)} 条短于 {lim['min_duration']:.1f} 秒")
+    if overlap:
+        items.append(f"{overlap} 处时间段重叠")
+    if too_many:
+        items.append(f"{len(too_many)} 条单行超过 {lim['max_line_chars']} 字")
+    return {"ok": not items, "items": items, "short": short,
+            "overlap": overlap, "too_many": too_many, "cues": len(ordered)}
+
+
+def bilibili_summary(audit):
+    """把 B站 交付体检说成一句人话，直接进日志和体检窗口。"""
+    audit = audit or {}
+    if audit.get("ok"):
+        return (f"B站交付体检：可以交（{audit.get('cues', 0)} 条）。"
+                "B站只收 SRT —— 导出时选「原文 / 中文 / 混合版」里的 SRT 就行。")
+    return ("B站交付体检：还不能直接交 —— " + "、".join(audit.get("items") or []) +
+            "。短条和重叠点「一键修」能处理大部分；时间太挤、后面没空的，机器补不动，"
+            "要你在体检列表里手工挪一下。单行超过 300 字的要自己拆句。")
+
+
+_EPS = 1e-9   # 时间比较的容差：SRT 是毫秒级，1 纳秒的差不算差
+
+
+def _fix_pass(items, lim):
+    """一轮：把倒序、重叠、间隙过小修一遍。返回 (新列表, 改动列表)。
+
+    为什么拆成"一轮一轮跑到不动"：把某条的**开始时间往后推**之后，它可能跑到
+    后面那一条的后面去 —— 列表就不再按时间排了。真实素材上第二次跑还会动 47 处，
+    就是因为第一遍留下的顺序是乱的，第二遍重新排序后又能发现新的重叠。
+    所以这里每轮结束都重新排序，跑到没有改动为止（有上限，防死循环）。
+    """
+    out, changes = [], []
+    for cue in sorted(items, key=lambda c: (c.start, c.id)):
         start, end = float(cue.start), float(cue.end)
         if end <= start:
             # 倒序 / 零长度：给一个最短可见时长，别让这条消失
@@ -203,24 +311,64 @@ def fix_safe(cues, limits=None):
         if out:
             prev = out[-1]
             gap = start - prev.end
-            if gap < lim["min_gap"]:
+            if gap < lim["min_gap"] - _EPS:
                 # 把前一条收短，给后面留出最小间隙；但不许把前一条收没了
                 want_end = start - lim["min_gap"]
                 floor = prev.start + lim["min_keep"]
-                if want_end >= floor:
+                if want_end >= floor and want_end < prev.end - _EPS:
                     changes.append({"kind": "overlap" if gap < 0 else "tiny_gap",
                                     "id": prev.id,
                                     "before": (prev.start, prev.end),
                                     "after": (prev.start, want_end)})
                     out[-1] = Cue(prev.id, prev.start, want_end, prev.source, prev.zh)
-                elif gap < 0:
+                elif gap < -_EPS:
                     # 前一条太短，收不动了 → 反过来把这一条往后推
                     new_start = prev.end + lim["min_gap"]
-                    if new_start < end:
+                    if new_start < end - _EPS:
                         changes.append({"kind": "overlap", "id": cue.id,
                                         "before": (start, end), "after": (new_start, end)})
                         start = new_start
         out.append(Cue(cue.id, start, end, cue.source, cue.zh))
+    return out, changes
+
+
+def fix_safe(cues, limits=None, duration=None):
+    """只修「怎么修都不会修错」的四类：时间倒序、重叠、间隙过小、
+    **太短补到 0.5 秒**（B站官方：单条时长不宜短于 0.5 秒）。
+
+    - 太短只往后延结束时间，不碰文字；有下一条时绝不盖住它（保留最小间隙），
+      后面没空就如实不动。
+    - 超长 / 读不完 / 单行超过 300 字 一律不自动动 —— 那要重排句子或拆条，
+      机器做只会把内容搞乱，必须人看一眼。
+    - **结果是幂等的**：跑完再跑一次不会再动（真实素材上专门验过）。
+
+    返回 (新列表, 改动列表)。改动列表里每条都有 前→后，供日志展示。
+    """
+    lim = dict(LIMITS)
+    lim.update(limits or {})
+    out, changes = [], []
+    working = list(cues)
+    for _round in range(30):
+        out, round_changes = _fix_pass(working, lim)
+        if not round_changes:
+            break
+        changes.extend(round_changes)
+        working = out
+    else:
+        # 30 轮还没收敛，说明数据本身很怪；如实返回当前结果，不再空转
+        pass
+
+    # 最后一遍：太短的往后补齐（B站 0.5 秒下限）。
+    # 放在最后：得等重叠都修完，才知道"后面还有没有空"。
+    for i, cue in enumerate(out):
+        if cue.end - cue.start >= lim["min_duration"] - _EPS:
+            continue
+        nxt = out[i + 1] if i + 1 < len(out) else None
+        want = _extend_room(cue, nxt, lim, duration)
+        if want > cue.end + _EPS:
+            changes.append({"kind": "too_short", "id": cue.id,
+                            "before": (cue.start, cue.end), "after": (cue.start, want)})
+            out[i] = Cue(cue.id, cue.start, want, cue.source, cue.zh)
     return out, changes
 
 
@@ -239,7 +387,8 @@ def rows_from_cues(cues):
 def save_fix(path, project, limits=None):
     """一键修安全的项并存盘。**改之前先备份**，和调时长、整体偏移同一套做法。
 
-    只修倒序、重叠、间隙过小这三类；超短/超长/读不完一律不动。
+    只修倒序、重叠、间隙过小、太短补到 0.5 秒这四类；
+    超长 / 读不完 / 单行超过 300 字 一律不动。
     返回 (新项目, 改动列表, 备份路径)；没什么可修时备份为 None。
     """
     import os
@@ -248,7 +397,15 @@ def save_fix(path, project, limits=None):
     from core import save_project
 
     cues = cues_from_rows(project.get("cues") or [])
-    fixed, changes = fix_safe(cues, limits)
+    # 最后一条补时长时不能超过片长 —— 片长记在识别信息里，有就用，没有就不限制
+    duration = None
+    info = project.get("recognition") or {}
+    if isinstance(info, dict) and info.get("duration"):
+        try:
+            duration = float(info["duration"])
+        except (TypeError, ValueError):
+            duration = None
+    fixed, changes = fix_safe(cues, limits, duration=duration)
     if not changes:
         return project, [], None
     updated = dict(project)
