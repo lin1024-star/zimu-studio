@@ -22,7 +22,7 @@ from core import (APP_VERSION, DEFAULT_MODEL, GLOSSARY_LIMIT, Cue, DeepSeekClien
                   store_imported_project, timestamp, worker, write_blocked_hint,
                   CHINESE_ONLY_KEYS, EXPORT_ITEMS, EXPORT_LABELS, SOURCE_ONLY_KEYS, ZH_KEYS,
                   BUILTIN_MODEL_REPOS, local_model_status, model_download_mb,
-                  MODEL_ORDER, MODEL_PROFILES, hardware_profile, model_pros_cons, model_table,
+                  MODEL_ORDER, MODEL_PROFILES, hardware_profile, model_pros_cons,
                   profile_text, recommend_model,
                   default_export_keys, default_export_selection, export_choices, should_alert)
 # ⚠ 这一行是必需的：下面有些地方写的是 `core.xxx`（模块式引用），
@@ -389,15 +389,17 @@ class Application(tk.Tk):
         main.columnconfigure(0, weight=1)
         main.rowconfigure(6, weight=1)
         settings_page = ttk.Frame(self.notebook)
-        settings_canvas = tk.Canvas(settings_page, bg=BG, highlightthickness=0)
-        settings_scroll = ttk.Scrollbar(settings_page, orient="vertical", command=settings_canvas.yview)
-        settings_scroll.pack(side="right", fill="y")
-        settings_canvas.pack(side="left", fill="both", expand=True)
-        settings_canvas.configure(yscrollcommand=settings_scroll.set)
-        settings = ttk.Frame(settings_canvas, padding=24)
-        settings_window = settings_canvas.create_window((0, 0), window=settings, anchor="nw")
-        settings.bind("<Configure>", lambda e: settings_canvas.configure(scrollregion=settings_canvas.bbox("all")))
-        settings_canvas.bind("<Configure>", lambda e: settings_canvas.itemconfigure(settings_window, width=e.width))
+        # 2026-10-18 晚（2.5.1）：原来这一页是「一整块 Canvas + 滚动条」，往下拖时
+        # Tk 要逐像素移动/重画整页控件，使用者反馈「卡顿、不连续、有残影」。
+        # 现在改成内部三页（翻译 / 识别 / 样式与开关），每页都放得下，不用滚动。
+        settings_tabs = ttk.Notebook(settings_page)
+        settings_tabs.pack(fill="both", expand=True)
+        translate_page = ttk.Frame(settings_tabs, padding=(16, 12))
+        speech_page = ttk.Frame(settings_tabs, padding=(16, 12))
+        other_page = ttk.Frame(settings_tabs, padding=(16, 12))
+        settings_tabs.add(translate_page, text="翻译")
+        settings_tabs.add(speech_page, text="识别")
+        settings_tabs.add(other_page, text="样式与开关")
         help_tab = ttk.Frame(self.notebook, padding=16)
         self.notebook.add(main, text="任务与字幕")
         self.notebook.add(settings_page, text="翻译与识别设置")
@@ -548,22 +550,20 @@ class Application(tk.Tk):
         self.logs = ScrolledText(main, height=3, wrap="word", font=(FONT_FAMILY, 9), bg="#e6edf3", fg=MUTED, relief="flat", state="disabled")
         self.logs.grid(row=10, column=0, sticky="ew", pady=(10, 0))
 
-        settings.columnconfigure(0, weight=1)
-
         # 2026-10-18 收拾这一页：原来 38 行平铺、内容 1937 像素，要滚三屏；
         # 现在按「翻译 / 识别 / 导出样式 / 开关」分四组，模型对照表搬到「使用帮助」。
         # 自动检测这台机器、给推荐、一键换模型的功能**一个都没删**（只是从底部挪进识别这组）。
 
-        def card(title):
+        def card(parent, title):
             """一组设置：粗体标题 + 一条细分隔线，里面的控件按 3 列摆。
 
             没用 ttk.LabelFrame：在 Windows 主题下它的灰底和页面底色对不上，
             灰框里会浮出一块块浅色小方块（截过图看过，很难看）。
             """
-            ttk.Label(settings, text=title, font=(FONT_FAMILY, 12, "bold")).pack(
+            ttk.Label(parent, text=title, font=(FONT_FAMILY, 12, "bold")).pack(
                 anchor="w", pady=(6, 0))
-            ttk.Separator(settings).pack(fill="x", pady=(3, 8))
-            frame = ttk.Frame(settings)
+            ttk.Separator(parent).pack(fill="x", pady=(3, 8))
+            frame = ttk.Frame(parent)
             frame.pack(fill="x", pady=(0, 8))
             frame.columnconfigure(1, weight=1)
             return frame
@@ -577,7 +577,7 @@ class Application(tk.Tk):
             return label
 
         # ---------- 一、翻译 ----------
-        translate = card("DeepSeek 翻译")
+        translate = card(translate_page, "DeepSeek 翻译")
         ttk.Label(translate, text="API 密钥").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=4)
         self.key_entry = ttk.Entry(translate, textvariable=self.api_key_var, show="●")
         self.key_entry.grid(row=0, column=1, sticky="ew", pady=4)
@@ -615,7 +615,7 @@ class Application(tk.Tk):
         self.busy_controls.append(force)
 
         # ---------- 二、本地识别（含自动检测 + 推荐，功能没动） ----------
-        speech = card("本地语音识别")
+        speech = card(speech_page, "本地语音识别")
         ttk.Label(speech, text="识别模型").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=4)
         c = ttk.Combobox(speech, textvariable=self.asr_var, values=list(MODEL_ORDER),
                          state="readonly", width=26)
@@ -664,7 +664,7 @@ class Application(tk.Tk):
         self.refresh_hardware_hint()
 
         # ---------- 三、导出样式（可选） ----------
-        ass = card("ASS 导出样式（可选；要带字体/颜色的中文 .ass 才用）")
+        ass = card(other_page, "ASS 导出样式（可选；要带字体/颜色的中文 .ass 才用）")
         ttk.Label(ass, text="样式文件").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=4)
         ass_entry = ttk.Entry(ass, textvariable=self.ass_style_var)
         ass_entry.grid(row=0, column=1, sticky="ew", pady=4)
@@ -681,7 +681,7 @@ class Application(tk.Tk):
                   "导出含中文时自动生成“中文_zh.ass”。", 2)
 
         # ---------- 四、开关 ----------
-        options = card("开关（都可选）")
+        options = card(other_page, "开关（都可选）")
         options.columnconfigure(0, weight=1)
         options.columnconfigure(1, weight=1)
         ttk.Checkbutton(options, text="翻译完成后提醒（跑完把窗口拉到前台 + 提示音）",
@@ -700,8 +700,8 @@ class Application(tk.Tk):
                       "人声分离的模型约 60 MB，随包附带、不联网、不上传；"
                       "中文自检只报不改，一期素材约几分钱。", 2, column=0, columnspan=2)
 
-        save_row = ttk.Frame(settings)
-        save_row.pack(fill="x", pady=(2, 2))
+        save_row = ttk.Frame(settings_page, padding=(16, 6, 16, 6))
+        save_row.pack(fill="x")
         ttk.Button(save_row, text="保存设置", command=self.save_settings_clicked,
                    style="Accent.TButton").pack(side="left")
         ttk.Label(save_row, textvariable=self.glossary_hint_var,
@@ -709,10 +709,11 @@ class Application(tk.Tk):
         self.glossary_global_button = ttk.Button(
             save_row, text="把术语表存为全局默认", command=self.save_glossary_as_global)
         self.glossary_global_button.pack(side="left")
-        ttk.Label(settings, text="这一页的改动也会在开始任务、关闭软件时自动保存，不点按钮也不会丢。"
-                                 "术语表默认跟着当前这一期走；想让以后每一期都用同一份，"
-                                 "点「把术语表存为全局默认」。术语表只影响翻译，不改变识别结果。",
-                  style="Muted.TLabel", wraplength=1000, justify="left").pack(anchor="w", pady=(6, 0))
+        ttk.Label(settings_page, text="这一页的改动也会在开始任务、关闭软件时自动保存，不点按钮也不会丢。"
+                                       "术语表默认跟着当前这一期走；想让以后每一期都用同一份，"
+                                       "点「把术语表存为全局默认」。术语表只影响翻译，不改变识别结果。",
+                  style="Muted.TLabel", wraplength=1000, justify="left").pack(
+                      anchor="w", padx=16, pady=(0, 10))
 
         def wrap_long_labels(widget):
             """长说明自动换行；短标签不动。"""
@@ -726,13 +727,32 @@ class Application(tk.Tk):
                         child.configure(wraplength=900)
                 wrap_long_labels(child)
 
-        wrap_long_labels(settings)
+        wrap_long_labels(settings_page)
         text = ScrolledText(help_tab, wrap="word", font=(FONT_FAMILY, 11), padx=16, pady=16, relief="flat")
         text.pack(fill="both", expand=True)
         text.insert("1.0", "怎么选识别模型（自动检测 + 推荐）\n\n"
                            "设置页的「本地语音识别」会自动检测这台机器、给一个推荐，旁边就能一键换。"
-                           "下面这张表是六个模型的长短处；选哪个都行，这里只是给依据。\n\n"
-                           + model_table() + "\n\n\n" + HELP)
+                           "下面这张表是六个模型的长短处；选哪个都行，这里只是给依据。\n\n")
+        # 2026-10-18 晚（2.5.1）：原来这张表是「空格对齐的纯文本」，插进正文后表头和
+        # 数据对不上（比例字体 + 星号宽度不等于一个字符位）。改成真正的表格控件，
+        # 列对齐由 Tk 负责，跟字体无关 —— 就不会再错位了。
+        model_tree = ttk.Treeview(
+            text, columns=("model", "size", "speed", "quality", "note"),
+            show="headings", height=len(MODEL_ORDER), selectmode="none")
+        for key, title, width in (("model", "模型", 90), ("size", "大小", 90),
+                                  ("speed", "速度", 80), ("quality", "质量", 80),
+                                  ("note", "适合什么时候用", 560)):
+            model_tree.heading(key, text=title)
+            model_tree.column(key, width=width, minwidth=60, anchor="w",
+                              stretch=(key == "note"))
+        for name in MODEL_ORDER:
+            info = core.MODEL_PROFILES[name]
+            model_tree.insert("", "end", values=(
+                name, "%d MB" % info["mb"], "%d/5" % info["speed"],
+                "%d/5" % info["quality"], info["note"]))
+        text.window_create("end", window=model_tree)
+        text.insert("end", "\n\n\n")
+        text.insert("end", HELP)
         text.configure(state="disabled")
 
         # ⚠ 新页面一律加在 build_ui 的**末尾**。
