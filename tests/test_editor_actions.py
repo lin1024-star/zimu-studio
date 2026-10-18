@@ -26,6 +26,7 @@ class Widget:
     def insert(self, pos, value): self.value = value
     def configure(self, **kw): self.props.update(kw)
     def cget(self, name): return self.props[name]
+    def edit_modified(self, *args): pass      # ScrolledText 有、替身也得有（refresh_glossary_hint 会调）
     def focus_set(self): pass
 
 
@@ -52,7 +53,7 @@ class Controller:
         self.queue_mode, self.queue_index, self.queue_ok, self.queue_fail = "", 0, 0, 0
         self.last_job_ok = False
         self.pending_translate = False
-        for name in ("source_var", "out_var", "lang_var", "status_var", "summary_var", "time_start", "time_end", "api_key_var", "model_var", "local_model_var", "ass_style_var"):
+        for name in ("source_var", "out_var", "lang_var", "status_var", "summary_var", "time_start", "time_end", "api_key_var", "model_var", "local_model_var", "ass_style_var", "glossary_hint_var"):
             setattr(self, name, Value())
         self.ass_style_name_var = Value("Default")
         self.force_var = Value(False)
