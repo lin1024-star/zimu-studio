@@ -532,7 +532,7 @@ class Application(tk.Tk):
         ttk.Label(row, text="（清空中文可补译此条）", style="Muted.TLabel").pack(side="left", padx=6)
 
         ccheck_row = ttk.Frame(main)
-        ccheck_row.grid(row=8, column=0, sticky="ew", pady=(6, 0))
+        ccheck_row.grid(row=9, column=0, sticky="ew", pady=(6, 0))
         self.ccheck_button = ttk.Button(ccheck_row, text="中文自检（找可能翻错的句子）",
                                         command=self.run_chinese_check)
         self.ccheck_button.pack(side="left")
@@ -540,7 +540,7 @@ class Application(tk.Tk):
                   style="Muted.TLabel").pack(side="left", padx=8)
 
         export = ttk.Frame(main)
-        export.grid(row=9, column=0, sticky="ew", pady=(14, 6))
+        export.grid(row=10, column=0, sticky="ew", pady=(14, 6))
         ttk.Label(export, text="④ 导出", font=(FONT_FAMILY, 11, "bold")).pack(side="left", padx=(0, 10))
         self.full_export_button = self.button(export, "导出文件…", lambda: self.manual_export(True), side="left")
         self.button(export, "打开输出文件夹", self.open_output, busy=False, side="left", padx=8)
@@ -548,7 +548,7 @@ class Application(tk.Tk):
                   style="Muted.TLabel").pack(side="left", padx=10)
 
         self.logs = ScrolledText(main, height=3, wrap="word", font=(FONT_FAMILY, 9), bg="#e6edf3", fg=MUTED, relief="flat", state="disabled")
-        self.logs.grid(row=10, column=0, sticky="ew", pady=(10, 0))
+        self.logs.grid(row=11, column=0, sticky="ew", pady=(10, 0))
 
         # 2026-10-18 收拾这一页：原来 38 行平铺、内容 1937 像素，要滚三屏；
         # 现在按「翻译 / 识别 / 导出样式 / 开关」分四组，模型对照表搬到「使用帮助」。
