@@ -39,6 +39,7 @@ from live.capture import (AudioRing, DEFAULT_SOURCE, FileAudioSource, SystemAudi
 from live.overlay import Overlay  # noqa: E402
 from live.pipeline import DEFAULTS, LiveTranscriber, Translator  # noqa: E402
 from core import LANGUAGES  # noqa: E402
+import friendly_errors  # noqa: E402
 
 FLASH_MODEL = "deepseek-flash"
 
@@ -233,8 +234,8 @@ class LiveApp:
             self.capture = SystemAudioCapture(self.ring, source_id=source_id)
             self.capture.start()
         except Exception as exc:  # noqa: BLE001
-            log(f"换音源失败：{exc}")
-            self.out.put(("status", f"换音源失败：{exc}"))
+            log(f"换音源失败：{type(exc).__name__}: {exc}")
+            self.out.put(("status", f"换音源失败：{friendly_errors.hint(exc)}"))
             return
         save_source_id(source_id)
         label = source_label(source_id)
@@ -299,7 +300,7 @@ class LiveApp:
         self.translator = Translator(
             self._key(), FLASH_MODEL, self.current_glossary,
             on_result=lambda r: self.out.put(("subtitle", r)),
-            on_error=lambda e: self.out.put(("warn", f"翻译出错：{type(e).__name__}")))
+            on_error=lambda e: self.out.put(("warn", f"翻译出错：{friendly_errors.hint(e)}")))
         self.translator.start()
 
         threading.Thread(target=self._boot, daemon=True).start()
@@ -323,8 +324,8 @@ class LiveApp:
                 self.out.put(("warn", f"原来的音源「{bad}」用不了，已自动改回默认扬声器。"
                                       f"想换别的，点右上角「音源」。"))
             if getattr(self.capture, "error", None):
-                log(f"抓声音失败：{self.capture.error}")
-                self.out.put(("fatal", f"抓声音失败：{self.capture.error}"))
+                log(f"抓声音失败：{type(self.capture.error).__name__}: {self.capture.error}")
+                self.out.put(("fatal", friendly_errors.brief(self.capture.error)))
                 return
             log(f"音频来源：{self.capture.device}（{source_label(self.source_id)}）")
             log(f"术语表：{len(self.current_glossary())} 字")
@@ -335,8 +336,8 @@ class LiveApp:
             live_cfg["language"] = self.language
             self.transcriber = LiveTranscriber(
                 self.ring, live_cfg, on_sentence=self.translator.submit,
-                on_error=lambda e: (log(f"识别出错：{type(e).__name__}: {e}"),
-                                    self.out.put(("warn", f"识别出错：{type(e).__name__}"))))
+                on_error=lambda e: (log(f"识别出错：{friendly_errors.hint(e)}"),
+                                    self.out.put(("warn", f"识别出错：{friendly_errors.hint(e)}"))))
             self.transcriber.load()
             self.transcriber.start()
             log(f"识别模型：{self.transcriber.model_name or '（未记录）'}　"
@@ -351,7 +352,7 @@ class LiveApp:
         except Exception as exc:  # noqa: BLE001
             import traceback
             log("启动失败：\n" + traceback.format_exc())
-            self.out.put(("fatal", f"启动失败：{type(exc).__name__}: {exc}"))
+            self.out.put(("fatal", friendly_errors.explain(exc, context="启动实时字幕时")))
 
     def _key(self):
         from live.pipeline import load_key

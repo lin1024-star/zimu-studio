@@ -26,6 +26,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 PAYLOAD = REPO / "payload"
 FILES = ("app.py", "dialogs.py", "core.py", "ja_fix.py", "chinese_check.py", "timeline_qc.py",
+         "friendly_errors.py", "errfmt.py",
          "ass.py", "polish.py", "live/app.py", "live/pipeline.py", "live/overlay.py",
          "live/glossary.py", "live/studio.py", "live/capture.py")
 

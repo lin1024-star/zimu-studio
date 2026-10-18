@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 
 from core import Cancelled, UserError, check_cancel
+import friendly_errors
 from paths import data_root
 
 MANIFEST = json.loads(Path(__file__).with_name("gpu_manifest.json").read_text("utf-8"))
@@ -357,4 +358,4 @@ def setup_worker(stop, messages):
         emit("error", str(exc))
     except Exception as exc:
         emit("diagnostic", {"event": "error", **error_info(exc, gpu=True)})
-        emit("error", f"显卡配置尚未完成（{type(exc).__name__}）。可先使用 CPU，稍后再点“启用显卡加速”重试。")
+        emit("error", friendly_errors.brief(exc))
