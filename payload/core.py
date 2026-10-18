@@ -23,7 +23,7 @@ from pathlib import Path
 from diagnostics import error_info
 from paths import data_root
 
-APP_VERSION = "2.4.1"
+APP_VERSION = "2.5"
 DEFAULT_MODEL = "deepseek-flash"
 API_URL = "https://api.deepseek.com/chat/completions"
 LANGUAGES = {"en": "英语", "ja": "日语", "zh": "中文"}
@@ -2063,6 +2063,53 @@ def tidy_axis(cues, emit, gap_threshold=None):
         if len(repeats) > AXIS_REVIEW_LIMIT:
             emit("log", "  另有 {} 段未列出。".format(len(repeats) - AXIS_REVIEW_LIMIT))
     return polished, report
+
+
+def merge_split_cues(project, first_id):
+    """把「可能被切开的词」那两条合并成一条 —— 人在「待确认」窗口里点过才调。
+
+    返回 (新的项目字典, 说明)；不能合并时返回 (None, 说明)。
+
+    合并会少一条，所以项目里按编号记着的东西要跟着改：
+      · chinese_check（中文自检结果）：被合并那两条的结论直接丢掉（文字变了，下次自检重查），
+        编号比它大的往下挪一位
+      · axis_review（待确认清单）：按合并后的轴重新算一遍
+    项目文件本身不在这里写盘，由调用方决定（界面要弹提示、写日志）。
+    """
+    import polish
+    rows = [Cue(**row) for row in project.get("cues") or []]
+    merged, info = polish.merge_split_pair(rows, first_id)
+    if merged is None:
+        return None, info
+    updated = dict(project)
+    updated["cues"] = [asdict(cue) for cue in merged]
+    _shift_check_references(updated, info["id"], info["removed_id"])
+    updated["axis_review"] = (polish.review_list(merged)
+                              + polish.find_cross_splits(merged)
+                              + polish.find_repeated_blocks(merged))
+    return updated, info
+
+
+def _shift_check_references(project, merged_id, removed_id):
+    """合并掉一条之后，把中文自检结果里按编号记的引用跟着挪。"""
+    box = project.get("chinese_check") or {}
+    if not box:
+        return
+    items = []
+    for item in box.get("items") or []:
+        try:
+            old_id = int(item.get("id", 0))
+        except (TypeError, ValueError):
+            continue
+        if old_id in (int(merged_id), int(removed_id)):
+            continue                      # 这两条的文字变了，旧结论作废
+        fixed = dict(item)
+        if old_id > int(removed_id):
+            fixed["id"] = old_id - 1
+        items.append(fixed)
+    fixed_box = dict(box)
+    fixed_box["items"] = items
+    project["chinese_check"] = fixed_box
 
 
 def restore_axis_cues(raw, current):

@@ -114,6 +114,44 @@ def find_cross_splits(cues, max_gap=SPLIT_WORD_MAX_GAP):
     return out
 
 
+def merge_split_pair(cues, first_id):
+    """把「可能被切开的词」那相邻两条合成一条 —— **人确认之后才调**。
+
+    2026-10-18 加：原来待确认窗口只把候选列出来，还得自己回到列表里改两遍、删一条。
+    现在窗口里选中一行点「合并这两条」即可；判断仍然由人做 —— 实测一半候选是
+    正常断句（见 find_cross_splits 的说明），所以绝不自动合并。
+
+    合并规则：
+      · 原文直接接起来（日语一个字一个字接，不加空格 —— 被切开的本来就是一个词的两半）
+      · 开始取前一条，结束取两条里晚的那个
+      · **中文清空**：半截译文接起来一定是错意思。合并后点「识别并翻译 / 继续」
+        只会补缺中文的条目，也就是只补这一条，不会重复花钱
+      · 合并后整个列表重新编号（跟其它整理步骤一致）
+
+    返回 (新列表, 说明)；这两条不能合并时新列表为 None、说明里带 error。
+    """
+    try:
+        wanted = int(first_id)
+    except (TypeError, ValueError):
+        return None, {"error": "编号不是数字，不能合并。"}
+    index = {cue.id: position for position, cue in enumerate(cues)}
+    position = index.get(wanted)
+    if position is None or position + 1 >= len(cues):
+        return None, {"error": "这两条已经不在列表里了（可能刚合并过），关掉窗口重新打开再看。"}
+    first, second = cues[position], cues[position + 1]
+    if second.id != first.id + 1:
+        return None, {"error": "这两条中间夹了别的条目，不能直接合并。"}
+    source = first.source.rstrip() + second.source.lstrip()
+    end = max(first.end, second.end)
+    merged = Cue(first.id, first.start, end, source, "")
+    rows = cues[:position] + [merged] + cues[position + 2:]
+    rows = [Cue(number, cue.start, cue.end, cue.source, cue.zh)
+            for number, cue in enumerate(rows, 1)]
+    return rows, {"id": first.id, "removed_id": second.id,
+                  "before": first.source, "after": second.source,
+                  "merged": source, "start": first.start, "end": end}
+
+
 def find_repeated_blocks(cues, min_gap=REPEAT_MIN_GAP):
     """找出「同一段连续字幕在片子里别处又演了一遍」——**只提醒，不改**。
 

@@ -2197,76 +2197,178 @@ class Application(tk.Tk):
                             "那些要重排句子或拆条，请看「时间轴体检」的列表。")
         return True
 
-    def show_axis_review(self):
-        """列出识别后要人工确认的位置，并允许还原整理前的轴。
+    @staticmethod
+    def _axis_review_selected(tree, rows):
+        """待确认窗口里选中的那一行（没选中返回 None）。"""
+        selection = tree.selection()
+        if not selection:
+            return None
+        try:
+            return rows[int(selection[0])]
+        except (ValueError, IndexError):
+            return None
 
-        机器只标位置，不替人做决定：像「ほんと?」这种说得很快的完整台词
-        不该合并，孤零零一个字的碎片也不该乱删，都留给使用者看一眼。
+    @staticmethod
+    def _axis_review_target(row):
+        """这一行双击该跳到第几条。
+
+        长静音没有自己的条目，跳到间隙后面那条（before_id）；其它跳到自己的第一条。
+        """
+        if not row:
+            return None
+        kind = row.get("kind")
+        if kind == "gap":
+            return row.get("before_id") or row.get("after_id")
+        if kind == "repeat":
+            return row.get("first_id")
+        return row.get("id")
+
+    def jump_to_axis_review_row(self, tree, rows):
+        """待确认窗口里双击 / 回车：跳到选中的那一条。"""
+        target = self._axis_review_target(self._axis_review_selected(tree, rows))
+        if target is not None:
+            self.jump_to_cue(target)
+
+    def jump_to_repeat_second(self, tree, rows):
+        """「出现两遍」跳到后面那一段，方便两处对照。"""
+        row = self._axis_review_selected(tree, rows)
+        if row and row.get("kind") == "repeat":
+            self.jump_to_cue(row["second_id"])
+
+    def merge_axis_review_row(self, win, tree, rows):
+        """把选中的拆词候选合并成一条（人确认过才走到这里）。
+
+        只有一个按钮、只处理「可能被切开的词」；重复段落不提供一键删 —— 删哪一段
+        要看素材，机器不替他决定。
+        """
+        row = self._axis_review_selected(tree, rows)
+        if not row or row.get("kind") != "split":
+            messagebox.showinfo("先选一行", "请先在上面的列表里选中一行「可能被切开的词」。")
+            return
+        if not self.project_path:
+            messagebox.showinfo("还没存过", "这个项目还没有保存过，先保存再合并。")
+            return
+        if not messagebox.askyesno(
+                "合并这两条",
+                "把第 {} 条「{}」和第 {} 条「{}」合成一条？\n\n"
+                "合并后：\n"
+                "· 原文变成「{}」\n"
+                "· 开始时间取前一条，结束时间取两条里晚的那个\n"
+                "· 这条的中文会被清空 —— 半截译文接起来一定是错意思。合并后"
+                "点「识别并翻译 / 继续」只会补这一条，不会重复花钱\n"
+                "· 后面的条目编号会往前挪一位".format(
+                    row["id"], row["before"], row["next_id"], row["after"], row["merged"])):
+            return
+        updated, info = core.merge_split_cues(self.project, row["id"])
+        if updated is None:
+            messagebox.showerror("不能合并", info.get("error", "未知原因。"))
+            return
+        try:
+            save_project(self.project_path, updated)
+        except (OSError, UserError) as exc:
+            messagebox.showerror("没存上", save_error_text(exc))
+            return
+        win.destroy()
+        self.reload_project(self.project_path)
+        self.log("待确认：把第 {} 条「{}」和第 {} 条「{}」合并成「{}」"
+                 "（中文已清空，点「识别并翻译 / 继续」只补这一条）。".format(
+                     info["id"], info["before"], info["removed_id"],
+                     info["after"], info["merged"]))
+        self.show_axis_review()
+
+    def show_axis_review(self):
+        """列出识别后要人工确认的位置：双击跳过去，拆词候选能当场合并。
+
+        机器只标位置，不替人做决定：像「ほんと?」这种说得很快的完整台词不该合并，
+        孤零零一个字的碎片也不该乱删，都留给使用者看一眼。
+
+        2026-10-18 改：原来是只读文本，连双击跳转都没有 —— 列出来也没法处理。
+        现在换成能选行的表：双击跳到那一条；拆词候选选中后点「合并这两条」当场合并
+        （中文会清空，之后再点「识别并翻译 / 继续」只补这一条）；
+        重复段落只提醒，删哪一段由他自己定。
         """
         if not self.project:
             messagebox.showinfo("待确认", "还没有载入字幕。")
             return
         review = self.project.get("axis_review") or []
         raw = self.project.get("axis_raw") or []
-        gaps = [row for row in review if row.get("kind") == "gap"]
-        shorts = [row for row in review if row.get("kind") == "short"]
-        splits = [row for row in review if row.get("kind") == "split"]
-        repeats = [row for row in review if row.get("kind") == "repeat"]
-        if not gaps and not shorts and not splits and not repeats:
+        if not review:
             messagebox.showinfo("待确认", "当前项目没有记录到需要人工确认的位置。")
             return
         win = tk.Toplevel(self)
         win.title("待确认的位置")
         win.transient(self)
-        win.geometry("780x430")
-        ttk.Label(win, text="程序只标出位置，不替你改。逐条看过再决定是否手动删改。",
-                  style="Muted.TLabel").pack(anchor="w", padx=10, pady=(10, 4))
-        box = ScrolledText(win, wrap="word", height=18)
-        box.pack(fill="both", expand=True, padx=10)
-        lines = []
-        if gaps:
-            lines.append(f"长静音：{len(gaps)} 处连续 3 秒以上没有字幕，可能漏识别。")
-            for gap in gaps:
-                lines.append("    {} → {}（{:.1f} 秒），在「第 {} 条」和「第 {} 条」之间".format(
-                    timestamp(gap["start"]), timestamp(gap["end"]), gap["seconds"],
-                    gap["after_id"], gap["before_id"]))
-        if shorts:
-            if lines:
-                lines.append("")
-            lines.append(f"过短条目：{len(shorts)} 条短于 0.5 秒。")
-            lines.append("    「ほんと?」这类是说很快的完整台词，不用管；孤零零一个字的可以自己判断。")
-            for short in shorts:
-                lines.append("    第 {} 条：{:.2f} 秒「{}」".format(
-                    short["id"], short["seconds"], short["text"]))
-        if splits:
-            if lines:
-                lines.append("")
-            lines.append(f"可能被切开的词：{len(splits)} 处。")
-            lines.append("    判据是「前一条以假名+单个汉字结尾、且下一条紧贴」，只标出来、**没有自动合并**：")
-            lines.append("    实测这类位置里有一半是正常断句（比如「目の出し方」|「オルト…」），")
-            lines.append("    自动合并会把两句话焊成一条。看到确实是同一个词的，请自己在列表里合并。")
-            for item in splits:
-                lines.append("    第 {} 条「{}」+ 第 {} 条「{}」 → 可能是「{}」".format(
-                    item["id"], item["before"], item["next_id"], item["after"], item["merged"]))
-        if repeats:
-            if lines:
-                lines.append("")
-            lines.append(f"出现了两遍的段落：{len(repeats)} 段（只提醒，没有自动删）。")
-            lines.append("    同一段素材在片子里放了两次时，成片会有两段一模一样的中文字幕；")
-            lines.append("    确认是重复的话，删掉其中一段即可。")
-            for item in repeats:
-                lines.append("    第 {}-{} 条 和 第 {}-{} 条：连续 {} 条一样，隔 {:.0f} 秒「{}」".format(
-                    item["first_id"], item["first_last_id"], item["second_id"],
-                    item["second_last_id"], item["cues"], item["gap"], item["text"]))
-        box.insert("1.0", "\n".join(lines))
-        box.configure(state="disabled")
-        bar = ttk.Frame(win)
-        bar.pack(fill="x", padx=10, pady=8)
+        win.geometry("920x540")
+        ttk.Label(win, text="程序只标出位置，不替你改。双击一行可以跳到那一条；"
+                            "拆词候选确认是同一个词，选中它点「合并这两条」。",
+                  style="Muted.TLabel", wraplength=880, justify="left").pack(
+                      anchor="w", padx=12, pady=(10, 6))
+        table = tk.Frame(win)
+        table.pack(fill="both", expand=True, padx=12)
+        tree = ttk.Treeview(table, columns=("kind", "where", "what"), show="headings",
+                            selectmode="browse", height=16)
+        for key, title, width in (("kind", "类型", 140), ("where", "位置", 200),
+                                  ("what", "内容", 540)):
+            tree.heading(key, text=title)
+            tree.column(key, width=width, minwidth=80, anchor="w",
+                        stretch=(key == "what"))
+        scroll = ttk.Scrollbar(table, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        rows = []
+        for row in review:
+            kind = row.get("kind")
+            if kind == "gap":
+                values = ("长静音",
+                          "{} → {}".format(timestamp(row["start"]), timestamp(row["end"])),
+                          "{:.1f} 秒没有字幕（在「第 {} 条」和「第 {} 条」之间），可能漏识别".format(
+                              row["seconds"], row["after_id"], row["before_id"]))
+            elif kind == "short":
+                values = ("过短条目", "第 {} 条".format(row["id"]),
+                          "{:.2f} 秒「{}」 —— 说很快的完整台词不用管".format(
+                              row["seconds"], row["text"]))
+            elif kind == "split":
+                values = ("可能被切开的词", "第 {} + {} 条".format(row["id"], row["next_id"]),
+                          "「{}」+「{}」→ 可能是「{}」（有一半是正常断句，看原文再决定）".format(
+                              row["before"], row["after"], row["merged"]))
+            elif kind == "repeat":
+                values = ("出现两遍的段落",
+                          "第 {}-{} 条 / 第 {}-{} 条".format(
+                              row["first_id"], row["first_last_id"],
+                              row["second_id"], row["second_last_id"]),
+                          "连续 {} 条一样，隔 {:.0f} 秒「{}」".format(
+                              row["cues"], row["gap"], row["text"][:60]))
+            else:
+                continue
+            tree.insert("", "end", iid=str(len(rows)), values=values)
+            rows.append(row)
+
+        def refresh_buttons(_event=None):
+            row = self._axis_review_selected(tree, rows) or {}
+            merge_button.configure(state="normal" if row.get("kind") == "split" else "disabled")
+            second_button.configure(
+                state="normal" if row.get("kind") == "repeat" else "disabled")
+
+        buttons = tk.Frame(win)
+        buttons.pack(fill="x", padx=12, pady=10)
+        merge_button = ttk.Button(buttons, text="合并这两条", state="disabled",
+                                  command=lambda: self.merge_axis_review_row(win, tree, rows))
+        merge_button.pack(side="left")
+        second_button = ttk.Button(buttons, text="跳到后面那一段", state="disabled",
+                                   command=lambda: self.jump_to_repeat_second(tree, rows))
+        second_button.pack(side="left", padx=8)
         if raw:
-            ttk.Button(bar, text=f"还原整理前的轴（{len(raw)} 条）",
-                       command=lambda: self.revert_axis(win)).pack(side="left")
-            ttk.Label(bar, text="已翻译的中文会按时间保留。", style="Muted.TLabel").pack(side="left", padx=8)
-        ttk.Button(bar, text="关闭", command=win.destroy).pack(side="right")
+            ttk.Button(buttons, text="还原整理前的轴（{} 条）".format(len(raw)),
+                       command=lambda: self.revert_axis(win)).pack(side="left", padx=8)
+        ttk.Button(buttons, text="关闭", command=win.destroy).pack(side="right")
+
+        tree.bind("<<TreeviewSelect>>", refresh_buttons)
+        tree.bind("<Double-1>", lambda _event: self.jump_to_axis_review_row(tree, rows))
+        tree.bind("<Return>", lambda _event: self.jump_to_axis_review_row(tree, rows))
+        if rows:
+            tree.selection_set(tree.get_children()[0])
+        refresh_buttons()
         win.bind("<Escape>", lambda event: win.destroy())
         win.focus_set()
 
