@@ -87,7 +87,7 @@ payload/    Python 主程序（Tk 界面、识别、翻译、导出、密钥加�
   lib/      随包第三方库（soundcard / cffi / pycparser，实时字幕抓系统声音用）
   live/     实时中文字幕（抓系统声音 → 本机识别 → 翻译 → 屏幕悬浮字幕）
 source/     C# 安装器源码（含内嵌 manifest.json 与 payload.zip 的构建工程）
-tests/      安装器与核心逻辑测试（Python 602 项 + 界面冒烟 160 项 + C# 23 项）
+tests/      安装器与核心逻辑测试（Python 602 项 + 界面冒烟 158 项 + C# 23 项）
 *.txt/html  许可证、第三方声明、验证记录、快速开始、FAQ 与更新记录
 ```
 
