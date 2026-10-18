@@ -612,7 +612,7 @@ class Application(tk.Tk):
         ttk.Label(settings, text="导入 .ass 模板即可使用其字体/颜色/位置；留空用内置默认样式（白字黑边）。导出含中文时自动生成“中文_zh.ass”。", style="Muted.TLabel").grid(row=19, column=1, columnspan=2, sticky="w", pady=6)
         ttk.Checkbutton(settings, text="翻译完成后提醒（还原并置顶窗口 + 提示音）", variable=self.alert_var).grid(row=20, column=0, columnspan=3, sticky="w", pady=(14, 2))
         ttk.Label(settings, text="翻译要跑几分钟到几十分钟；跑完时把窗口拉到前台提醒一次。取消勾选则不打扰，可在状态栏和日志里查看结果。", style="Muted.TLabel").grid(row=21, column=1, columnspan=2, sticky="w")
-        ttk.Checkbutton(settings, text="识别后自动整理轴（合并重复、并入语气碎片、修正拖音）", variable=self.tidy_var).grid(row=22, column=0, columnspan=3, sticky="w", pady=(14, 2))
+        ttk.Checkbutton(settings, text="识别后自动整理轴（合并重复、标出被切开的词、并入语气碎片、修正拖音）", variable=self.tidy_var).grid(row=22, column=0, columnspan=3, sticky="w", pady=(14, 2))
         ttk.Label(settings, text="只动重复文本和时长，不重跑识别、不改变独一无二的内容；整理前的原文会存进项目，随时可还原。", style="Muted.TLabel").grid(row=23, column=1, columnspan=2, sticky="w")
         separate_check = ttk.Checkbutton(
             settings, text="先分离人声再识别（素材很吵时打开，能多听出内容；识别前多等约 3 倍时间）",
@@ -2210,7 +2210,8 @@ class Application(tk.Tk):
         raw = self.project.get("axis_raw") or []
         gaps = [row for row in review if row.get("kind") == "gap"]
         shorts = [row for row in review if row.get("kind") == "short"]
-        if not gaps and not shorts:
+        splits = [row for row in review if row.get("kind") == "split"]
+        if not gaps and not shorts and not splits:
             messagebox.showinfo("待确认", "当前项目没有记录到需要人工确认的位置。")
             return
         win = tk.Toplevel(self)
@@ -2236,6 +2237,16 @@ class Application(tk.Tk):
             for short in shorts:
                 lines.append("    第 {} 条：{:.2f} 秒「{}」".format(
                     short["id"], short["seconds"], short["text"]))
+        if splits:
+            if lines:
+                lines.append("")
+            lines.append(f"可能被切开的词：{len(splits)} 处。")
+            lines.append("    判据是「前一条以假名+单个汉字结尾、且下一条紧贴」，只标出来、**没有自动合并**：")
+            lines.append("    实测这类位置里有一半是正常断句（比如「目の出し方」|「オルト…」），")
+            lines.append("    自动合并会把两句话焊成一条。看到确实是同一个词的，请自己在列表里合并。")
+            for item in splits:
+                lines.append("    第 {} 条「{}」+ 第 {} 条「{}」 → 可能是「{}」".format(
+                    item["id"], item["before"], item["next_id"], item["after"], item["merged"]))
         box.insert("1.0", "\n".join(lines))
         box.configure(state="disabled")
         bar = ttk.Frame(win)

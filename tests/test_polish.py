@@ -148,6 +148,59 @@ class RestoreAxisTest(unittest.TestCase):
         self.assertEqual([r["id"] for r in restore_axis_cues(raw, [])], [1, 2])
 
 
+class CrossSplitTest(unittest.TestCase):
+    """跨条拆词：只是**标出来**，不自动合并（2026-10-18 实测后改的）。
+
+    原计划是自动合并（前一条以「假名 + 单个汉字」结尾、且下一条紧贴）。
+    拿本机 24 个真实项目跑了一遍：命中 50 处，逐条看约 30 处是正常断句
+    （「目の出し方」｜「オルト…」、「薬局の人」｜「300万…」、「これ、車」｜「車、ちょっと」），
+    只有约 20 处是真拆词（感情、請求、押し、入り、使って、最初、聞いて、周り、彼女、友達、道路）。
+    自动合并＝修一个词、错一片轴，所以改成只列进「待确认」。
+    """
+
+    def test_kana_plus_kanji_then_tight_next_is_found(self):
+        cues = [Cue(1, 0.0, 1.0, "もっと頑"), Cue(2, 1.05, 2.0, "張るよ")]
+        found = polish.find_cross_splits(cues)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["merged"], "もっと頑張るよ")
+        self.assertEqual((found[0]["id"], found[0]["next_id"]), (1, 2))
+
+    def test_kanji_plus_kana_next_is_found_too(self):
+        # 「周」+「り」= 周り
+        cues = [Cue(1, 0.0, 1.0, "あの周"), Cue(2, 1.1, 2.0, "りを歩く")]
+        found = polish.find_cross_splits(cues)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["merged"], "あの周りを歩く")
+
+    def test_candidates_are_never_merged_by_polish(self):
+        """关键：整条整理流程跑完，条数/文字一个字都不许变（只报告）。"""
+        cues = [Cue(1, 0.0, 1.0, "もっと頑"), Cue(2, 1.05, 2.0, "張るよ"),
+                Cue(3, 5.0, 6.0, "そうですね")]
+        out, report = polish.polish(cues)
+        self.assertEqual([c.source for c in out], [c.source for c in cues])
+        self.assertEqual(len(out), len(cues))
+        self.assertEqual(report["split_candidates"], 1)
+
+    def test_split_candidate_goes_into_review(self):
+        cues = [Cue(1, 0.0, 1.0, "もっと頑"), Cue(2, 1.05, 2.0, "張るよ")]
+        _out, report = polish.polish(cues)
+        kinds = [item["kind"] for item in report["review"]]
+        self.assertIn("split", kinds)
+
+    def test_gap_too_large_is_not_found(self):
+        cues = [Cue(1, 0.0, 1.0, "もっと頑"), Cue(2, 1.5, 2.5, "張るよ")]
+        self.assertEqual(polish.find_cross_splits(cues), [])
+
+    def test_sentence_ending_in_kana_is_not_found(self):
+        cues = [Cue(1, 0.0, 1.0, "そうですね"), Cue(2, 1.05, 2.0, "はい")]
+        self.assertEqual(polish.find_cross_splits(cues), [])
+
+    def test_two_kanji_ending_is_not_found(self):
+        # 前一条最后两个字都是汉字（不是「假名 + 单个汉字」）
+        cues = [Cue(1, 0.0, 1.0, "いい感情"), Cue(2, 1.05, 2.0, "を持つ")]
+        self.assertEqual(polish.find_cross_splits(cues), [])
+
+
 class ProjectStorageTest(unittest.TestCase):
     def test_axis_backup_survives_a_save(self):
         with tempfile.TemporaryDirectory() as tmp:

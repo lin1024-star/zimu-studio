@@ -2028,6 +2028,7 @@ def tidy_axis(cues, emit, gap_threshold=None):
             emit("log", "  " + axis_change_text(item))
     gaps = [r for r in report["review"] if r["kind"] == "gap"]
     shorts = [r for r in report["review"] if r["kind"] == "short"]
+    splits = [r for r in report["review"] if r["kind"] == "split"]
     if gaps:
         emit("log", "待确认：{} 处连续 {} 秒以上没有字幕，可能漏识别，建议抽听。".format(
             len(gaps), int(threshold)))
@@ -2043,6 +2044,14 @@ def tidy_axis(cues, emit, gap_threshold=None):
             emit("log", "  第 {} 条：{:.2f} 秒「{}」".format(short["id"], short["seconds"], short["text"]))
         if len(shorts) > AXIS_REVIEW_LIMIT:
             emit("log", "  另有 {} 条未列出。".format(len(shorts) - AXIS_REVIEW_LIMIT))
+    if splits:
+        emit("log", "待确认：{} 处看起来是一个词被切成了两条（只标出来，**没有自动合并** —— 自动合并实测会误伤正常断句）：".format(
+            len(splits)))
+        for item in splits[:AXIS_REVIEW_LIMIT]:
+            emit("log", "  第 {} 条「{}」+ 第 {} 条「{}」→ 可能是「{}」".format(
+                item["id"], item["before"], item["next_id"], item["after"], item["merged"]))
+        if len(splits) > AXIS_REVIEW_LIMIT:
+            emit("log", "  另有 {} 处未列出。".format(len(splits) - AXIS_REVIEW_LIMIT))
     return polished, report
 
 

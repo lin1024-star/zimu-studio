@@ -16,10 +16,16 @@ FRAGMENT_SECONDS = 0.5
 FRAGMENT_MAX_CHARS = 2
 # 合并碎片时允许的最大间隔；两条之间有朗读停顿就不硬并。
 FRAGMENT_MAX_GAP = 0.3
+# 跨条拆词：某条以「假名 + 单个汉字」结尾，且下一条与它紧贴（≤ 这个间隔）→ 是一个词被切开了。
+# 依据：2026-10-13 朗读剧对比实测（large-v3 把「頑張る」拆成「頑」+「張る」），
+# 一期素材里这种地方是 5 处量级。判据故意保守：只认"紧贴 + 假名后跟单个汉字"。
+SPLIT_WORD_MAX_GAP = 0.35
 # 超过这个时长的无字幕段算长间隙。
 LONG_GAP_SECONDS = 3.0
 
 _PUNCT = re.compile(r"[\s、。，．,.!！?？…‥・「」『』（）()\[\]【】\-—~〜]+")
+_KANA = re.compile(r"[\u3040-\u309f\u30a0-\u30ff\u30fc]")
+_KANJI = re.compile(r"[\u4e00-\u9fff\u3005]")
 
 
 def normalize_text(text):
@@ -44,6 +50,60 @@ def compress_elongations(cues):
         else:
             out.append(cue)
     return out, changes
+
+
+def is_cross_split(prev, cue, max_gap=SPLIT_WORD_MAX_GAP):
+    """这两条是不是"一个词被切成了两条"。
+
+    判据（2026-10-13 朗读剧逐条对比时定的，故意保守）：
+    1. 前一条去掉标点后**以「假名 + 单个汉字」结尾**（如「…て頑」）
+    2. 后一条与它**紧贴**：开始时间不晚于前一条结束 + 0.35 秒
+    3. 后一条得有内容（去标点后非空）
+
+    典型例子：「頑」+「張る」= 頑張る；「周」+「り」= 周り。
+    只认这种形状，是因为真被切开的词一定长这样；
+    而正常断句的句尾基本都是假名/标点（「…ですね」），不会命中。
+    """
+    if cue is None or prev is None:
+        return False
+    if cue.start - prev.end > max_gap:
+        return False
+    left = normalize_text(prev.source)
+    right = normalize_text(cue.source)
+    if len(left) < 2 or not right:
+        return False
+    if not _KANJI.fullmatch(left[-1]):
+        return False
+    return bool(_KANA.fullmatch(left[-2]))
+
+
+def find_cross_splits(cues, max_gap=SPLIT_WORD_MAX_GAP):
+    """找出「可能是一个词被切成两条」的位置 —— **只报告，不合并**。
+
+    ## 为什么只报告（2026-10-18 实测把原计划推翻了）
+
+    原计划是"自动合并"。拿本机 24 个真实项目跑了一遍，命中 **50 处**，逐条看：
+    真正被切开的词大约 20 处（感情、請求、押し、入り、使って、最初、聞いて、
+    周り、彼女、友達、道路…），其余 ~30 处是**正常断句**被误命中：
+    「目の出し方」｜「オルトオルトオルト」、「薬局の人」｜「300万の時に混ぜる」、
+    「これ、車」｜「車、ちょっと」、「警察の方」｜「犯罪者しかいない」…
+    自动合并会把它们焊成一条，等于"修一个词、错一片轴"。
+
+    所以这里只返回候选，由 core 放进「待确认」，人看过再决定。
+    返回 [{"kind": "split", "id", "next_id", "before", "after", "merged", "start", "end"}, ...]
+    """
+    out = []
+    for i, cue in enumerate(cues):
+        if i == 0:
+            continue
+        prev = cues[i - 1]
+        if is_cross_split(prev, cue, max_gap):
+            out.append({"kind": "split", "id": prev.id, "next_id": cue.id,
+                        "before": prev.source, "after": cue.source,
+                        "merged": prev.source.rstrip() + cue.source.lstrip(),
+                        "start": prev.start, "end": max(prev.end, cue.end),
+                        "gap": round(cue.start - prev.end, 3)})
+    return out
 
 
 def fold_adjacent(cues):
@@ -141,6 +201,8 @@ def polish(cues, fold=True, merge=True, compress=True, gap_threshold=LONG_GAP_SE
     """按顺序做拖音压缩 → 重复折叠 → 碎片合并，返回 (新列表, 报告)。
 
     只动时间与重复文本，不改变模型输出里独一无二的内容。
+    "被切开的词"**不自动合并**，只放进报告的 split_candidates / review，交人看
+    （理由见 find_cross_splits 的说明）。
     report["changes"] 逐条记录改了什么，供日志直接展示。
     """
     before = list(cues)
@@ -162,8 +224,10 @@ def polish(cues, fold=True, merge=True, compress=True, gap_threshold=LONG_GAP_SE
     report["fragments_merged"] = sum(1 for c in report["changes"] if c["kind"] == "merge")
     # 重新编号，保持连续
     current = [Cue(i + 1, c.start, c.end, c.source, c.zh) for i, c in enumerate(current)]
+    splits = find_cross_splits(current)
+    review = review_list(current, gap_threshold) + splits
     report.update({"cues_after": len(current), "short_after": count_short(current),
                    "overlaps_after": count_overlaps(current),
                    "gaps_after": len(find_long_gaps(current, gap_threshold)),
-                   "review": review_list(current, gap_threshold)})
+                   "split_candidates": len(splits), "review": review})
     return current, report
