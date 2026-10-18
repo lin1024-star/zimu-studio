@@ -548,132 +548,191 @@ class Application(tk.Tk):
         self.logs = ScrolledText(main, height=3, wrap="word", font=(FONT_FAMILY, 9), bg="#e6edf3", fg=MUTED, relief="flat", state="disabled")
         self.logs.grid(row=10, column=0, sticky="ew", pady=(10, 0))
 
-        settings.columnconfigure(1, weight=1)
-        ttk.Label(settings, text="DeepSeek 翻译", font=(FONT_FAMILY, 15, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 15))
-        ttk.Label(settings, text="API 密钥").grid(row=1, column=0, sticky="w", pady=6, padx=(0, 18))
-        self.key_entry = ttk.Entry(settings, textvariable=self.api_key_var, show="●")
-        self.key_entry.grid(row=1, column=1, sticky="ew", pady=6)
+        settings.columnconfigure(0, weight=1)
+
+        # 2026-10-18 收拾这一页：原来 38 行平铺、内容 1937 像素，要滚三屏；
+        # 现在按「翻译 / 识别 / 导出样式 / 开关」分四组，模型对照表搬到「使用帮助」。
+        # 自动检测这台机器、给推荐、一键换模型的功能**一个都没删**（只是从底部挪进识别这组）。
+
+        def card(title):
+            """一组设置：粗体标题 + 一条细分隔线，里面的控件按 3 列摆。
+
+            没用 ttk.LabelFrame：在 Windows 主题下它的灰底和页面底色对不上，
+            灰框里会浮出一块块浅色小方块（截过图看过，很难看）。
+            """
+            ttk.Label(settings, text=title, font=(FONT_FAMILY, 12, "bold")).pack(
+                anchor="w", pady=(6, 0))
+            ttk.Separator(settings).pack(fill="x", pady=(3, 8))
+            frame = ttk.Frame(settings)
+            frame.pack(fill="x", pady=(0, 8))
+            frame.columnconfigure(1, weight=1)
+            return frame
+
+        def note(parent, text, row, column=1, columnspan=2):
+            """灰色小字说明：统一换行宽度，不再一行撑到窗外。"""
+            label = ttk.Label(parent, text=text, style="Muted.TLabel",
+                              wraplength=900, justify="left")
+            label.grid(row=row, column=column, columnspan=columnspan,
+                       sticky="w", pady=(2, 2))
+            return label
+
+        # ---------- 一、翻译 ----------
+        translate = card("DeepSeek 翻译")
+        ttk.Label(translate, text="API 密钥").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=4)
+        self.key_entry = ttk.Entry(translate, textvariable=self.api_key_var, show="●")
+        self.key_entry.grid(row=0, column=1, sticky="ew", pady=4)
         show = tk.BooleanVar(value=False)
-        show_btn = ttk.Checkbutton(settings, text="显示", variable=show, command=lambda: self.key_entry.configure(show="" if show.get() else "●"))
-        show_btn.grid(row=1, column=2, padx=12)
+        show_btn = ttk.Checkbutton(
+            translate, text="显示", variable=show,
+            command=lambda: self.key_entry.configure(show="" if show.get() else "●"))
+        show_btn.grid(row=0, column=2, sticky="w", padx=(10, 0))
         self.busy_controls.extend([self.key_entry, show_btn])
-        remember_btn = ttk.Checkbutton(settings, text="记住密钥（Windows 账户级加密，仅本机可解；取消勾选即清除）", variable=self.remember_var)
-        remember_btn.grid(row=2, column=1, sticky="w", pady=(2, 0))
+        remember_btn = ttk.Checkbutton(
+            translate, text="记住密钥（Windows 账户级加密，仅本机可解；取消勾选即清除）",
+            variable=self.remember_var)
+        remember_btn.grid(row=1, column=1, columnspan=2, sticky="w")
         self.busy_controls.append(remember_btn)
-        ttk.Label(settings, text="翻译模型").grid(row=3, column=0, sticky="w", pady=10)
-        model_combo = ttk.Combobox(settings, textvariable=self.model_var, values=[DEFAULT_MODEL, "deepseek-v4-pro"], width=30)
-        model_combo.grid(row=3, column=1, sticky="w", pady=10)
+
+        ttk.Label(translate, text="翻译模型").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=(10, 4))
+        model_combo = ttk.Combobox(translate, textvariable=self.model_var,
+                                   values=[DEFAULT_MODEL, "deepseek-v4-pro"], width=30)
+        model_combo.grid(row=2, column=1, sticky="w", pady=(10, 4))
         self.busy_controls.append(model_combo)
-        ttk.Label(settings, text="可填写账户可用的模型 ID；使用非思考模式翻译。", style="Muted.TLabel").grid(row=4, column=1, sticky="w")
-        ttk.Label(settings, text="人名 / 术语说明").grid(row=5, column=0, sticky="nw", pady=10)
+        ttk.Label(translate, text="可填账户可用的模型 ID（非思考模式翻译）",
+                  style="Muted.TLabel").grid(row=2, column=2, sticky="w", padx=(10, 0), pady=(10, 4))
+
+        ttk.Label(translate, text="人名 / 术语说明").grid(row=3, column=0, sticky="nw", padx=(0, 12), pady=4)
         self.glossary_hint_var = tk.StringVar()
-        self.glossary = ScrolledText(settings, height=4, wrap="word", font=(FONT_FAMILY, 10))
-        self.glossary.grid(row=5, column=1, columnspan=2, sticky="ew", pady=10)
+        self.glossary = ScrolledText(translate, height=3, wrap="word", font=(FONT_FAMILY, 10))
+        self.glossary.grid(row=3, column=1, columnspan=2, sticky="ew", pady=4)
         self.glossary.insert("1.0", self.settings.get("glossary", ""))
         self.glossary.edit_modified(False)
         self.glossary.bind("<<Modified>>", self.refresh_glossary_hint)
         self.refresh_glossary_hint()
-        ttk.Label(settings, text="例如：John Smith = 约翰·史密斯。新设置只用于缺少中文的条目；已有译文会保留。", style="Muted.TLabel").grid(row=6, column=1, columnspan=2, sticky="w")
-        force = ttk.Checkbutton(settings, text="重新翻译全部（会重新消耗 API 额度）", variable=self.force_var)
-        force.grid(row=7, column=1, sticky="w", pady=10)
+        note(translate, "一行一条，例如 John Smith = 约翰·史密斯。只影响翻译；已有中文不会被自动重译。", 4)
+        force = ttk.Checkbutton(translate, text="重新翻译全部（会重新消耗 API 额度）", variable=self.force_var)
+        force.grid(row=5, column=1, columnspan=2, sticky="w", pady=(6, 0))
         self.busy_controls.append(force)
-        ttk.Separator(settings).grid(row=8, column=0, columnspan=3, sticky="ew", pady=14)
-        ttk.Label(settings, text="本地语音识别", font=(FONT_FAMILY, 15, "bold")).grid(row=9, column=0, columnspan=3, sticky="w", pady=(2, 14))
-        for r, label, var, values in [(10, "识别模型", self.asr_var, list(MODEL_ORDER)),
-                                       (11, "处理设备", self.device_var, ["CPU（直接使用）", "NVIDIA GPU（4 GB 省显存）"])]:
-            ttk.Label(settings, text=label).grid(row=r, column=0, sticky="w", pady=6)
-            c = ttk.Combobox(settings, textvariable=var, values=values, state="readonly", width=28)
-            c.grid(row=r, column=1, sticky="w", pady=6)
-            self.busy_controls.append(c)
-            if r == 10:
-                self.asr_combo = c
-                c.bind("<<ComboboxSelected>>", lambda _e: self.refresh_model_hint())
-        ttk.Label(settings, textvariable=self.model_hint_var, style="Muted.TLabel").grid(row=10, column=2, sticky="w", padx=10)
-        ttk.Label(settings, text="CPU 可直接使用。显卡首次下载约 570 MB 组件；下载可继续，显卡不可用时自动使用 CPU。", style="Muted.TLabel").grid(row=12, column=1, columnspan=2, sticky="w", pady=6)
-        ttk.Label(settings, text="本地模型文件夹").grid(row=13, column=0, sticky="w", pady=6)
-        entry = ttk.Entry(settings, textvariable=self.local_model_var)
-        entry.grid(row=13, column=1, sticky="ew", pady=6)
-        btn = ttk.Button(settings, text="选择…", command=self.choose_model)
-        btn.grid(row=13, column=2, padx=10)
-        self.busy_controls.extend([entry, btn])
-        ttk.Label(settings, text="可留空。填写时优先使用该文件夹，应包含 model.bin、config.json、tokenizer.json 等模型文件。", style="Muted.TLabel").grid(row=14, column=1, columnspan=2, sticky="w")
-        ttk.Separator(settings).grid(row=15, column=0, columnspan=3, sticky="ew", pady=14)
-        ttk.Label(settings, text="ASS 导出样式（可选）", font=(FONT_FAMILY, 15, "bold")).grid(row=16, column=0, columnspan=3, sticky="w", pady=(2, 10))
-        ttk.Label(settings, text="样式文件").grid(row=17, column=0, sticky="w", pady=6, padx=(0, 18))
-        ass_entry = ttk.Entry(settings, textvariable=self.ass_style_var)
-        ass_entry.grid(row=17, column=1, sticky="ew", pady=6)
-        ttk.Button(settings, text="选择…", command=self.choose_ass_style).grid(row=17, column=2, padx=(12, 0))
-        self.busy_controls.append(ass_entry)
-        ttk.Label(settings, text="样式名").grid(row=18, column=0, sticky="w", pady=6, padx=(0, 18))
-        self.ass_style_combo = ttk.Combobox(settings, textvariable=self.ass_style_name_var, state="readonly", width=28)
-        self.ass_style_combo.grid(row=18, column=1, sticky="w", pady=6)
-        self.busy_controls.append(self.ass_style_combo)
-        self.refresh_ass_styles()
-        ttk.Label(settings, text="导入 .ass 模板即可使用其字体/颜色/位置；留空用内置默认样式（白字黑边）。导出含中文时自动生成“中文_zh.ass”。", style="Muted.TLabel").grid(row=19, column=1, columnspan=2, sticky="w", pady=6)
-        ttk.Checkbutton(settings, text="翻译完成后提醒（还原并置顶窗口 + 提示音）", variable=self.alert_var).grid(row=20, column=0, columnspan=3, sticky="w", pady=(14, 2))
-        ttk.Label(settings, text="翻译要跑几分钟到几十分钟；跑完时把窗口拉到前台提醒一次。取消勾选则不打扰，可在状态栏和日志里查看结果。", style="Muted.TLabel").grid(row=21, column=1, columnspan=2, sticky="w")
-        ttk.Checkbutton(settings, text="识别后自动整理轴（合并重复、并入语气碎片、修正拖音；顺带标出被切开的词和出现两遍的段落）", variable=self.tidy_var).grid(row=22, column=0, columnspan=3, sticky="w", pady=(14, 2))
-        ttk.Label(settings, text="只动重复文本和时长，不重跑识别、不改变独一无二的内容；整理前的原文会存进项目，随时可还原。", style="Muted.TLabel").grid(row=23, column=1, columnspan=2, sticky="w")
-        separate_check = ttk.Checkbutton(
-            settings, text="先分离人声再识别（素材很吵时打开，能多听出内容；识别前多等约 3 倍时间）",
-            variable=self.separate_var)
-        separate_check.grid(row=24, column=0, columnspan=3, sticky="w", pady=(14, 2))
-        self.busy_controls.append(separate_check)
-        ttk.Label(settings, text="把说话声与游戏音效、音乐拆开，只拿说话声去识别。素材安静时改善有限，"
-                  "很吵时是决定性的（实测极端情况下不分离会几乎识别不出内容）；随包模型约 60 MB，不联网、不上传。",
-                  style="Muted.TLabel").grid(row=25, column=1, columnspan=2, sticky="w")
-        save_row = ttk.Frame(settings)
-        save_row.grid(row=26, column=0, columnspan=3, sticky="ew", pady=(20, 2))
-        ttk.Button(save_row, text="保存设置", command=self.save_settings_clicked, style="Accent.TButton").pack(side="left")
-        ttk.Label(save_row, textvariable=self.glossary_hint_var, style="Muted.TLabel").pack(side="left", padx=12)
-        self.glossary_global_button = ttk.Button(save_row, text="把术语表存为全局默认",
-                                                 command=self.save_glossary_as_global)
-        self.glossary_global_button.pack(side="left")
-        ttk.Label(settings, text="这一页的改动也会在开始任务、关闭软件时自动保存，不点按钮也不会丢。"
-                  "术语表默认跟着**当前这一期**走；想让以后每一期都用同一份，点「把术语表存为全局默认」。"
-                  "术语表只影响翻译，不改变语音识别结果。", style="Muted.TLabel").grid(row=27, column=0, columnspan=3, sticky="w")
 
-        # ---- 怎么选模型：自动检测这台机器 → 给推荐 → 长短处摆出来（选择权仍在使用者）----
-        ttk.Separator(settings).grid(row=28, column=0, columnspan=3, sticky="ew", pady=14)
-        ttk.Label(settings, text="怎么选识别模型", font=(FONT_FAMILY, 15, "bold")).grid(
-            row=29, column=0, columnspan=3, sticky="w", pady=(2, 10))
-        ttk.Label(settings, text="这台机器", style="Muted.TLabel").grid(row=30, column=0, sticky="nw", pady=6)
-        ttk.Label(settings, textvariable=self.hardware_var).grid(row=30, column=1, columnspan=2, sticky="w", pady=6)
-        ttk.Label(settings, text="推荐", style="Muted.TLabel").grid(row=31, column=0, sticky="nw", pady=6)
-        ttk.Label(settings, textvariable=self.recommend_var, wraplength=640,
-                  justify="left").grid(row=31, column=1, columnspan=2, sticky="w", pady=6)
-        hw_row = ttk.Frame(settings)
-        hw_row.grid(row=32, column=1, columnspan=2, sticky="w", pady=(2, 8))
+        # ---------- 二、本地识别（含自动检测 + 推荐，功能没动） ----------
+        speech = card("本地语音识别")
+        ttk.Label(speech, text="识别模型").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=4)
+        c = ttk.Combobox(speech, textvariable=self.asr_var, values=list(MODEL_ORDER),
+                         state="readonly", width=26)
+        c.grid(row=0, column=1, sticky="w", pady=4)
+        self.busy_controls.append(c)
+        self.asr_combo = c
+        c.bind("<<ComboboxSelected>>", lambda _e: self.refresh_model_hint())
+        ttk.Label(speech, textvariable=self.model_hint_var, style="Muted.TLabel").grid(
+            row=0, column=2, sticky="w", padx=(12, 0), pady=4)
+        ttk.Label(speech, text="处理设备").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=4)
+        device_combo = ttk.Combobox(
+            speech, textvariable=self.device_var,
+            values=["CPU（直接使用）", "NVIDIA GPU（4 GB 省显存）"], state="readonly", width=26)
+        device_combo.grid(row=1, column=1, sticky="w", pady=4)
+        self.busy_controls.append(device_combo)
+        gpu_btn = ttk.Button(speech, text="启用显卡加速", command=self.start_gpu_setup,
+                             style="Accent.TButton")
+        gpu_btn.grid(row=1, column=2, sticky="w", padx=(12, 0), pady=4)
+        self.busy_controls.append(gpu_btn)
+        note(speech, "CPU 可直接使用。显卡首次下载约 570 MB 组件；下载可继续，显卡不可用时自动使用 CPU。", 2)
+
+        ttk.Label(speech, text="本地模型文件夹").grid(row=3, column=0, sticky="w", padx=(0, 12), pady=(8, 4))
+        entry = ttk.Entry(speech, textvariable=self.local_model_var)
+        entry.grid(row=3, column=1, sticky="ew", pady=(8, 4))
+        choose_btn = ttk.Button(speech, text="选择…", command=self.choose_model)
+        choose_btn.grid(row=3, column=2, sticky="w", padx=(10, 0), pady=(8, 4))
+        self.busy_controls.extend([entry, choose_btn])
+        note(speech, "可留空。填写时优先使用该文件夹，应包含 model.bin、config.json、tokenizer.json 等模型文件。", 4)
+        ttk.Separator(speech).grid(row=5, column=0, columnspan=3, sticky="ew", pady=8)
+        ttk.Label(speech, text="这台机器", style="Muted.TLabel").grid(
+            row=6, column=0, sticky="nw", padx=(0, 12), pady=2)
+        ttk.Label(speech, textvariable=self.hardware_var).grid(
+            row=6, column=1, columnspan=2, sticky="w", pady=2)
+        ttk.Label(speech, text="推荐", style="Muted.TLabel").grid(
+            row=7, column=0, sticky="nw", padx=(0, 12), pady=2)
+        ttk.Label(speech, textvariable=self.recommend_var, wraplength=760,
+                  justify="left").grid(row=7, column=1, columnspan=2, sticky="w", pady=2)
+        hw_row = ttk.Frame(speech)
+        hw_row.grid(row=8, column=1, columnspan=2, sticky="w", pady=(6, 2))
         self.button(hw_row, "用推荐的模型", self.apply_recommended_model, busy=False, side="left")
         self.button(hw_row, "重新检测", self.refresh_hardware_hint, busy=False, side="left", padx=8)
-        ttk.Label(hw_row, text="选哪个都行，这里只是给依据", style="Muted.TLabel").pack(side="left", padx=10)
-        ttk.Label(settings, text="各模型的长短处").grid(row=33, column=0, sticky="nw", pady=(6, 2))
-        table = tk.Text(settings, height=7, width=96, font=("Consolas", 9), relief="solid",
-                        borderwidth=1, wrap="none")
-        table.insert("1.0", model_table())
-        table.configure(state="disabled")
-        table.grid(row=33, column=1, columnspan=2, sticky="w", pady=(6, 2))
-        ttk.Label(settings, textvariable=self.selected_model_var, style="Muted.TLabel").grid(
-            row=34, column=1, columnspan=2, sticky="w", pady=(4, 0))
+        # 「当前选择」那句比较长，单独占一行并允许折行 —— 原来挤在按钮右边会被窗口切掉
+        ttk.Label(speech, textvariable=self.selected_model_var, style="Muted.TLabel",
+                  wraplength=760, justify="left").grid(
+                      row=9, column=1, columnspan=2, sticky="w", pady=(2, 2))
         self.refresh_hardware_hint()
 
-        # ---- 中文自检（放在设置页最后一行，避免打乱上面的行号）----
-        ttk.Separator(settings).grid(row=35, column=0, columnspan=3, sticky="ew", pady=14)
-        ttk.Checkbutton(settings, text="翻译完成后自动检查中文（挑出可能翻错、会让你剪错的地方）",
-                        variable=self.ccheck_var).grid(row=36, column=0, columnspan=3, sticky="w", pady=(0, 2))
-        ttk.Label(settings, text="只挑会让你剪错的错：专名听错、意思反了、中文不成话、前后矛盾；"
-                  "措辞不同不算。只报不改，改还是你说了算。一期素材约几分钱，不想等就取消勾选。",
-                  style="Muted.TLabel").grid(row=37, column=1, columnspan=2, sticky="w")
+        # ---------- 三、导出样式（可选） ----------
+        ass = card("ASS 导出样式（可选；要带字体/颜色的中文 .ass 才用）")
+        ttk.Label(ass, text="样式文件").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=4)
+        ass_entry = ttk.Entry(ass, textvariable=self.ass_style_var)
+        ass_entry.grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Button(ass, text="选择…", command=self.choose_ass_style).grid(
+            row=0, column=2, sticky="w", padx=(10, 0), pady=4)
+        self.busy_controls.append(ass_entry)
+        ttk.Label(ass, text="样式名").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=4)
+        self.ass_style_combo = ttk.Combobox(ass, textvariable=self.ass_style_name_var,
+                                            state="readonly", width=28)
+        self.ass_style_combo.grid(row=1, column=1, sticky="w", pady=4)
+        self.busy_controls.append(self.ass_style_combo)
+        self.refresh_ass_styles()
+        note(ass, "导入 .ass 模板就用模板里的字体/颜色/位置；留空用内置默认（白字黑边）。"
+                  "导出含中文时自动生成“中文_zh.ass”。", 2)
 
-        gpu_btn = ttk.Button(settings, text="启用显卡加速", command=self.start_gpu_setup, style="Accent.TButton")
-        gpu_btn.grid(row=11, column=2, padx=10, pady=6)
-        self.busy_controls.append(gpu_btn)
-        for child in settings.winfo_children():
-            if isinstance(child, ttk.Label) and len(str(child.cget("text"))) > 36:
-                child.configure(wraplength=730)
+        # ---------- 四、开关 ----------
+        options = card("开关（都可选）")
+        options.columnconfigure(0, weight=1)
+        options.columnconfigure(1, weight=1)
+        ttk.Checkbutton(options, text="翻译完成后提醒（跑完把窗口拉到前台 + 提示音）",
+                        variable=self.alert_var).grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Checkbutton(options, text="识别后自动整理轴（合并重复/碎片、修正拖音；候选只提醒）",
+                        variable=self.tidy_var).grid(row=0, column=1, sticky="w", pady=2)
+        separate_check = ttk.Checkbutton(
+            options, text="先分离人声再识别（吵素材多听出内容，识别前多等约 3 倍时间）",
+            variable=self.separate_var)
+        separate_check.grid(row=1, column=0, sticky="w", pady=2)
+        self.busy_controls.append(separate_check)
+        ttk.Checkbutton(options, text="翻译完成后自动检查中文（挑出会让你剪错的句子）",
+                        variable=self.ccheck_var).grid(row=1, column=1, sticky="w", pady=2)
+        note(options, "整理轴只动重复文本和时长，整理前的原文会存进项目、可还原；"
+                      "「可能被切开的词」和「出现两遍的段落」只列出来，改不改、删不删由你定。"
+                      "人声分离的模型约 60 MB，随包附带、不联网、不上传；"
+                      "中文自检只报不改，一期素材约几分钱。", 2, column=0, columnspan=2)
+
+        save_row = ttk.Frame(settings)
+        save_row.pack(fill="x", pady=(2, 2))
+        ttk.Button(save_row, text="保存设置", command=self.save_settings_clicked,
+                   style="Accent.TButton").pack(side="left")
+        ttk.Label(save_row, textvariable=self.glossary_hint_var,
+                  style="Muted.TLabel").pack(side="left", padx=12)
+        self.glossary_global_button = ttk.Button(
+            save_row, text="把术语表存为全局默认", command=self.save_glossary_as_global)
+        self.glossary_global_button.pack(side="left")
+        ttk.Label(settings, text="这一页的改动也会在开始任务、关闭软件时自动保存，不点按钮也不会丢。"
+                                 "术语表默认跟着当前这一期走；想让以后每一期都用同一份，"
+                                 "点「把术语表存为全局默认」。术语表只影响翻译，不改变识别结果。",
+                  style="Muted.TLabel", wraplength=1000, justify="left").pack(anchor="w", pady=(6, 0))
+
+        def wrap_long_labels(widget):
+            """长说明自动换行；短标签不动。"""
+            for child in widget.winfo_children():
+                if isinstance(child, ttk.Label):
+                    try:
+                        value = str(child.cget("text") or "")
+                    except tk.TclError:
+                        value = ""
+                    if len(value) > 46:
+                        child.configure(wraplength=900)
+                wrap_long_labels(child)
+
+        wrap_long_labels(settings)
         text = ScrolledText(help_tab, wrap="word", font=(FONT_FAMILY, 11), padx=16, pady=16, relief="flat")
         text.pack(fill="both", expand=True)
-        text.insert("1.0", HELP)
+        text.insert("1.0", "怎么选识别模型（自动检测 + 推荐）\n\n"
+                           "设置页的「本地语音识别」会自动检测这台机器、给一个推荐，旁边就能一键换。"
+                           "下面这张表是六个模型的长短处；选哪个都行，这里只是给依据。\n\n"
+                           + model_table() + "\n\n\n" + HELP)
         text.configure(state="disabled")
 
         # ⚠ 新页面一律加在 build_ui 的**末尾**。
