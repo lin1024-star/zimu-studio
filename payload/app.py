@@ -249,17 +249,56 @@ class Application(tk.Tk):
             return {}
 
     def refresh_glossary_hint(self, _event=None):
-        """术语表字数实时提示：粘完立刻看见进去了多少，不用猜有没有存上。"""
+        """术语表字数实时提示：粘完立刻看见进去了多少，不用猜有没有存上。
+
+        2026-10-18 起还标出**作用范围**：「全局默认」还是「本期」——
+        以前不标，使用者分不清这次改的是以后每一期、还是只管当前这一期。
+        """
         self.glossary.edit_modified(False)
         count = len(self.glossary.get("1.0", "end-1c").strip())
+        scope = "本期" if getattr(self, "project", None) else "全局默认"
         if count > GLOSSARY_LIMIT:
-            self.glossary_hint_var.set("术语表 %d 字，超过 %d 字上限，超出部分不会发给翻译模型" % (count, GLOSSARY_LIMIT))
+            self.glossary_hint_var.set("%s术语表 %d 字，超过 %d 字上限，超出部分不会发给翻译模型"
+                                       % (scope, count, GLOSSARY_LIMIT))
         elif count:
-            self.glossary_hint_var.set("术语表 %d 字（上限 %d 字）" % (count, GLOSSARY_LIMIT))
+            self.glossary_hint_var.set("%s术语表 %d 字（上限 %d 字）" % (scope, count, GLOSSARY_LIMIT))
         else:
-            self.glossary_hint_var.set("术语表未填写（可选，上限 %d 字）" % GLOSSARY_LIMIT)
+            self.glossary_hint_var.set("%s术语表未填写（可选，上限 %d 字）" % (scope, GLOSSARY_LIMIT))
         # 术语表一改就重算列表里的术语标记，不用重新翻译
         self.apply_glossary_marks()
+
+    def glossary_for_settings(self):
+        """写回 settings.json 的术语表内容。
+
+        **有项目时一律保留原来的全局默认，绝不拿本期术语表去覆盖它。**
+
+        2026-10-18 修的雷（埋了很久）：打开某一期会把它存的术语表塞进输入框，
+        关软件时 save_settings 又把输入框内容写回 settings.json ——
+        于是"打开某一期看一眼、关掉软件"，全局术语表就被那一期替掉了
+        （实测有一期存的是 477 字窄版，全局是 707 字）。
+        要改以后每一期的默认值，必须走「存为全局默认」这个明确动作。
+        """
+        if getattr(self, "project", None):
+            return self.settings.get("glossary", "")
+        return self.glossary.get("1.0", "end-1c").strip()
+
+    def save_glossary_as_global(self):
+        """把当前输入框里的术语表存成全局默认（明确动作，不再隐式发生）。"""
+        text = self.glossary.get("1.0", "end-1c").strip()
+        previous = self.settings.get("glossary", "")
+        self.settings["glossary"] = text
+        if not self.save_settings():
+            self.settings["glossary"] = previous
+            messagebox.showwarning("没能存成全局默认",
+                                   "写入本机设置文件失败（多半是磁盘或权限问题）。\n"
+                                   "当前这份术语表在本次运行内仍然有效，但关闭软件后会丢。\n\n"
+                                   "可以点「诊断与资源 → 导出诊断包」查出原因。")
+            return
+        self.refresh_glossary_hint()
+        self.log("术语表已存为全局默认（%d 字）：以后新任务默认用它。" % len(text))
+        messagebox.showinfo("已存为全局默认",
+                            "以后新任务默认用这份 %d 字的术语表。\n\n"
+                            "当前这一期如果已经存过自己的术语表，它不会被改。" % len(text))
 
     def save_settings_clicked(self):
         """手动保存并给出明确回执；自动保存是静默的，这里让使用者看得见结果。"""
@@ -284,7 +323,7 @@ class Application(tk.Tk):
         data = {"output": self.out_var.get(), "language": self.lang_var.get(),
                 "asr_model": self.asr_var.get(), "device": self.device_var.get(),
                 "local_model": self.local_model_var.get(), "model": self.model_var.get(),
-                "glossary": self.glossary.get("1.0", "end-1c").strip(),
+                "glossary": self.glossary_for_settings(),
                 "ass_style_file": self.ass_style_var.get(), "ass_style_name": self.ass_style_name_var.get(),
                 "alert_when_done": bool(self.alert_var.get()),
                 "tidy_axis": bool(self.tidy_var.get()),
@@ -582,7 +621,11 @@ class Application(tk.Tk):
         save_row.grid(row=26, column=0, columnspan=3, sticky="ew", pady=(20, 2))
         ttk.Button(save_row, text="保存设置", command=self.save_settings_clicked, style="Accent.TButton").pack(side="left")
         ttk.Label(save_row, textvariable=self.glossary_hint_var, style="Muted.TLabel").pack(side="left", padx=12)
+        self.glossary_global_button = ttk.Button(save_row, text="把术语表存为全局默认",
+                                                 command=self.save_glossary_as_global)
+        self.glossary_global_button.pack(side="left")
         ttk.Label(settings, text="这一页的改动也会在开始任务、关闭软件时自动保存，不点按钮也不会丢。"
+                  "术语表默认跟着**当前这一期**走；想让以后每一期都用同一份，点「把术语表存为全局默认」。"
                   "术语表只影响翻译，不改变语音识别结果。", style="Muted.TLabel").grid(row=27, column=0, columnspan=3, sticky="w")
 
         # ---- 怎么选模型：自动检测这台机器 → 给推荐 → 长短处摆出来（选择权仍在使用者）----
@@ -1065,6 +1108,11 @@ class Application(tk.Tk):
                     self.model_var.set(profile.get("model", DEFAULT_MODEL))
                     self.glossary.delete("1.0", "end")
                     self.glossary.insert("1.0", profile.get("glossary", ""))
+                else:
+                    # 这一期还没翻译过：输入框回到「全局默认」，别把上一期的术语表留在框里
+                    self.glossary.delete("1.0", "end")
+                    self.glossary.insert("1.0", self.settings.get("glossary", ""))
+                self.refresh_glossary_hint()
                 self.status_var.set("项目已载入，可编辑、导出或继续翻译。")
             except UserError as exc:
                 messagebox.showerror("无法打开", str(exc))
@@ -1483,6 +1531,7 @@ class Application(tk.Tk):
         if not rows:
             self.clear_editor()
         self.sync_subtitle_mode()
+        self.refresh_glossary_hint()          # 有项目了 → 提示里的作用范围要从「全局默认」变「本期」
         self.select_cue()
 
     def clear_editor(self):
