@@ -22,6 +22,14 @@ FRAGMENT_MAX_GAP = 0.3
 SPLIT_WORD_MAX_GAP = 0.35
 # 超过这个时长的无字幕段算长间隙。
 LONG_GAP_SECONDS = 3.0
+# 长距离重复：同一段（连续多条）在片子里别处又出现一遍 —— 只提醒，不改。
+# 判据（2026-10-18 拿 24 个真实项目定的）：
+#   · 至少连续 3 条完全相同；或连续 2 条但两条都不短、合起来 ≥12 字
+#     （只按 2 条算会报一堆「あの／なんだろう」这种常见口头语）
+#   · 两段开始时间至少隔 30 秒（同一段放两遍，通常隔着几十秒到几分钟）
+REPEAT_MIN_CUES = 3
+REPEAT_MIN_CHARS = 12
+REPEAT_MIN_GAP = 30.0
 
 _PUNCT = re.compile(r"[\s、。，．,.!！?？…‥・「」『』（）()\[\]【】\-—~〜]+")
 _KANA = re.compile(r"[\u3040-\u309f\u30a0-\u30ff\u30fc]")
@@ -103,6 +111,76 @@ def find_cross_splits(cues, max_gap=SPLIT_WORD_MAX_GAP):
                         "merged": prev.source.rstrip() + cue.source.lstrip(),
                         "start": prev.start, "end": max(prev.end, cue.end),
                         "gap": round(cue.start - prev.end, 3)})
+    return out
+
+
+def find_repeated_blocks(cues, min_gap=REPEAT_MIN_GAP):
+    """找出「同一段连续字幕在片子里别处又演了一遍」——**只提醒，不改**。
+
+    用途：他把同一段素材在片子里放两遍（真事），成片会出现两段一模一样的中文字幕。
+    轴整理原来只查**相邻**重复（fold_adjacent），隔了几分钟的两段完全看不到。
+
+    做法：用相邻两条（2-gram）当索引，找到两处相同的起点后向两边扩到最长，
+    再把被包含的短块去掉；最后按"至少 3 条，或 2 条但都不短"过滤掉口头语噪音。
+    返回 [{"kind": "repeat", ...}]，字段与待确认窗口一致。
+    """
+    texts = [normalize_text(cue.source) for cue in cues]
+    n = len(texts)
+    if n < 2:
+        return []
+    index = {}
+    for i in range(n - 1):
+        if not (texts[i] and texts[i + 1]):
+            continue
+        index.setdefault((texts[i], texts[i + 1]), []).append(i)
+
+    blocks = set()
+    for positions in index.values():
+        if len(positions) < 2:
+            continue
+        for x in range(len(positions) - 1):
+            for y in range(x + 1, len(positions)):
+                i, j = positions[x], positions[y]
+                if j - i < 2:            # 重叠或紧挨着的不算"长距离"
+                    continue
+                a, b = i, j
+                while a > 0 and b > 0 and texts[a - 1] == texts[b - 1] and a - 1 + 2 < b:
+                    a -= 1
+                    b -= 1
+                length = 2
+                while a + length < n and b + length < n and texts[a + length] == texts[b + length]:
+                    length += 1
+                blocks.add((a, b, length))
+
+    # 去掉被更长的块完整包含的
+    maximal = []
+    for candidate in sorted(blocks, key=lambda item: item[2], reverse=True):
+        a, b, length = candidate
+        if any(ca <= a and b + length <= cb + cl and (ca, cb) != (a, b)
+               for ca, cb, cl in maximal):
+            continue
+        maximal.append(candidate)
+
+    out = []
+    for a, b, length in sorted(maximal):
+        gap = cues[b].start - cues[a + length - 1].end
+        if gap < min_gap:
+            continue
+        if length < REPEAT_MIN_CUES:
+            if length != 2:
+                continue
+            if min(len(texts[a]), len(texts[b])) < 4:
+                continue
+            if len(texts[a]) + len(texts[a + 1]) < REPEAT_MIN_CHARS:
+                continue
+        out.append({
+            "kind": "repeat",
+            "first_id": cues[a].id, "first_last_id": cues[a + length - 1].id,
+            "second_id": cues[b].id, "second_last_id": cues[b + length - 1].id,
+            "cues": length, "seconds": round(cues[a + length - 1].end - cues[a].start, 2),
+            "gap": round(gap, 1),
+            "text": " / ".join(texts[a:a + min(length, 4)])[:80],
+        })
     return out
 
 
@@ -225,9 +303,11 @@ def polish(cues, fold=True, merge=True, compress=True, gap_threshold=LONG_GAP_SE
     # 重新编号，保持连续
     current = [Cue(i + 1, c.start, c.end, c.source, c.zh) for i, c in enumerate(current)]
     splits = find_cross_splits(current)
-    review = review_list(current, gap_threshold) + splits
+    repeats = find_repeated_blocks(current)
+    review = review_list(current, gap_threshold) + splits + repeats
     report.update({"cues_after": len(current), "short_after": count_short(current),
                    "overlaps_after": count_overlaps(current),
                    "gaps_after": len(find_long_gaps(current, gap_threshold)),
-                   "split_candidates": len(splits), "review": review})
+                   "split_candidates": len(splits),
+                   "repeat_candidates": len(repeats), "review": review})
     return current, report

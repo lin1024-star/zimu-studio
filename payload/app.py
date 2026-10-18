@@ -612,7 +612,7 @@ class Application(tk.Tk):
         ttk.Label(settings, text="导入 .ass 模板即可使用其字体/颜色/位置；留空用内置默认样式（白字黑边）。导出含中文时自动生成“中文_zh.ass”。", style="Muted.TLabel").grid(row=19, column=1, columnspan=2, sticky="w", pady=6)
         ttk.Checkbutton(settings, text="翻译完成后提醒（还原并置顶窗口 + 提示音）", variable=self.alert_var).grid(row=20, column=0, columnspan=3, sticky="w", pady=(14, 2))
         ttk.Label(settings, text="翻译要跑几分钟到几十分钟；跑完时把窗口拉到前台提醒一次。取消勾选则不打扰，可在状态栏和日志里查看结果。", style="Muted.TLabel").grid(row=21, column=1, columnspan=2, sticky="w")
-        ttk.Checkbutton(settings, text="识别后自动整理轴（合并重复、标出被切开的词、并入语气碎片、修正拖音）", variable=self.tidy_var).grid(row=22, column=0, columnspan=3, sticky="w", pady=(14, 2))
+        ttk.Checkbutton(settings, text="识别后自动整理轴（合并重复、并入语气碎片、修正拖音；顺带标出被切开的词和出现两遍的段落）", variable=self.tidy_var).grid(row=22, column=0, columnspan=3, sticky="w", pady=(14, 2))
         ttk.Label(settings, text="只动重复文本和时长，不重跑识别、不改变独一无二的内容；整理前的原文会存进项目，随时可还原。", style="Muted.TLabel").grid(row=23, column=1, columnspan=2, sticky="w")
         separate_check = ttk.Checkbutton(
             settings, text="先分离人声再识别（素材很吵时打开，能多听出内容；识别前多等约 3 倍时间）",
@@ -1988,13 +1988,13 @@ class Application(tk.Tk):
     def announce_axis_review(self):
         """跑完后提醒还有待确认的位置，指向「待确认…」。"""
         review = (self.project or {}).get("axis_review") or []
-        gaps = sum(1 for row in review if row.get("kind") == "gap")
-        shorts = sum(1 for row in review if row.get("kind") == "short")
+        counts = {"gap": "处长静音", "short": "条过短",
+                  "split": "处可能被切开的词", "repeat": "段出现两遍"}
         parts = []
-        if gaps:
-            parts.append(f"{gaps} 处长静音")
-        if shorts:
-            parts.append(f"{shorts} 条过短")
+        for kind, label in counts.items():
+            number = sum(1 for row in review if row.get("kind") == kind)
+            if number:
+                parts.append(f"{number} {label}")
         if parts:
             self.log("待确认：" + "、".join(parts) + "。点「待确认…」查看，程序不会替你删改。")
 
@@ -2211,7 +2211,8 @@ class Application(tk.Tk):
         gaps = [row for row in review if row.get("kind") == "gap"]
         shorts = [row for row in review if row.get("kind") == "short"]
         splits = [row for row in review if row.get("kind") == "split"]
-        if not gaps and not shorts and not splits:
+        repeats = [row for row in review if row.get("kind") == "repeat"]
+        if not gaps and not shorts and not splits and not repeats:
             messagebox.showinfo("待确认", "当前项目没有记录到需要人工确认的位置。")
             return
         win = tk.Toplevel(self)
@@ -2247,6 +2248,16 @@ class Application(tk.Tk):
             for item in splits:
                 lines.append("    第 {} 条「{}」+ 第 {} 条「{}」 → 可能是「{}」".format(
                     item["id"], item["before"], item["next_id"], item["after"], item["merged"]))
+        if repeats:
+            if lines:
+                lines.append("")
+            lines.append(f"出现了两遍的段落：{len(repeats)} 段（只提醒，没有自动删）。")
+            lines.append("    同一段素材在片子里放了两次时，成片会有两段一模一样的中文字幕；")
+            lines.append("    确认是重复的话，删掉其中一段即可。")
+            for item in repeats:
+                lines.append("    第 {}-{} 条 和 第 {}-{} 条：连续 {} 条一样，隔 {:.0f} 秒「{}」".format(
+                    item["first_id"], item["first_last_id"], item["second_id"],
+                    item["second_last_id"], item["cues"], item["gap"], item["text"]))
         box.insert("1.0", "\n".join(lines))
         box.configure(state="disabled")
         bar = ttk.Frame(win)

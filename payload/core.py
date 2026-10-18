@@ -2029,6 +2029,7 @@ def tidy_axis(cues, emit, gap_threshold=None):
     gaps = [r for r in report["review"] if r["kind"] == "gap"]
     shorts = [r for r in report["review"] if r["kind"] == "short"]
     splits = [r for r in report["review"] if r["kind"] == "split"]
+    repeats = [r for r in report["review"] if r["kind"] == "repeat"]
     if gaps:
         emit("log", "待确认：{} 处连续 {} 秒以上没有字幕，可能漏识别，建议抽听。".format(
             len(gaps), int(threshold)))
@@ -2052,6 +2053,15 @@ def tidy_axis(cues, emit, gap_threshold=None):
                 item["id"], item["before"], item["next_id"], item["after"], item["merged"]))
         if len(splits) > AXIS_REVIEW_LIMIT:
             emit("log", "  另有 {} 处未列出。".format(len(splits) - AXIS_REVIEW_LIMIT))
+    if repeats:
+        emit("log", "待确认：{} 段字幕在片子里出现了两遍（同一段素材放了两次？只提醒，不改）：".format(
+            len(repeats)))
+        for item in repeats[:AXIS_REVIEW_LIMIT]:
+            emit("log", "  第 {}-{} 条 和 第 {}-{} 条：连续 {} 条一样，隔 {:.0f} 秒「{}」".format(
+                item["first_id"], item["first_last_id"], item["second_id"],
+                item["second_last_id"], item["cues"], item["gap"], item["text"]))
+        if len(repeats) > AXIS_REVIEW_LIMIT:
+            emit("log", "  另有 {} 段未列出。".format(len(repeats) - AXIS_REVIEW_LIMIT))
     return polished, report
 
 

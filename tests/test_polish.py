@@ -201,6 +201,50 @@ class CrossSplitTest(unittest.TestCase):
         self.assertEqual(polish.find_cross_splits(cues), [])
 
 
+class RepeatBlockTest(unittest.TestCase):
+    """长距离重复：同一段（连续几条）在片子里别处又演一遍 —— 只提醒，不删。"""
+
+    def _long_cues(self):
+        texts = ["おはようございます", "今日はいい天気ですね", "散歩でも行きますか", "そうしましょう"]
+        cues = [Cue(i + 1, i * 1.0, i * 1.0 + 0.9, texts[i]) for i in range(4)]
+        cues += [Cue(i + 5, 60.0 + i * 1.0, 60.0 + i * 1.0 + 0.9, texts[i]) for i in range(4)]
+        return cues
+
+    def test_far_apart_block_is_reported(self):
+        found = polish.find_repeated_blocks(self._long_cues())
+        self.assertEqual(len(found), 1)
+        item = found[0]
+        self.assertEqual((item["first_id"], item["first_last_id"]), (1, 4))
+        self.assertEqual((item["second_id"], item["second_last_id"]), (5, 8))
+        self.assertEqual(item["cues"], 4)
+        self.assertGreaterEqual(item["gap"], polish.REPEAT_MIN_GAP)
+
+    def test_short_common_phrases_are_not_reported(self):
+        # 「あの」「なんだろう」这种口头语两分钟里说了两遍，不算"整段重复"
+        cues = [Cue(1, 0, 1, "あの"), Cue(2, 1.1, 2, "なんだろう"),
+                Cue(3, 120, 121, "あの"), Cue(4, 121.1, 122, "なんだろう")]
+        self.assertEqual(polish.find_repeated_blocks(cues), [])
+
+    def test_too_close_is_not_reported(self):
+        cues = self._long_cues()
+        for cue in cues[4:]:
+            cue.start -= 55
+            cue.end -= 55
+        self.assertEqual(polish.find_repeated_blocks(cues), [])
+
+    def test_adjoining_duplicates_are_left_to_fold(self):
+        texts = ["おはようございます", "今日はいい天気ですね", "散歩でも行きますか"]
+        cues = [Cue(i + 1, i * 1.0, i * 1.0 + 0.9, texts[i % 3]) for i in range(6)]
+        self.assertEqual(polish.find_repeated_blocks(cues), [])
+
+    def test_polish_reports_but_never_deletes(self):
+        cues = self._long_cues()
+        out, report = polish.polish(cues)
+        self.assertEqual([c.source for c in out], [c.source for c in cues])
+        self.assertEqual(report["repeat_candidates"], 1)
+        self.assertIn("repeat", [item["kind"] for item in report["review"]])
+
+
 class ProjectStorageTest(unittest.TestCase):
     def test_axis_backup_survives_a_save(self):
         with tempfile.TemporaryDirectory() as tmp:
