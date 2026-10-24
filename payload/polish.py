@@ -12,8 +12,6 @@ ELONGATION_MIN = 4
 ELONGATION_KEEP = 2
 # 短于这个时长算碎片。
 FRAGMENT_SECONDS = 0.5
-# 碎片最多这么长（去掉标点后）才认为"没有实义"。
-FRAGMENT_MAX_CHARS = 2
 # 合并碎片时允许的最大间隔；两条之间有朗读停顿就不硬并。
 FRAGMENT_MAX_GAP = 0.3
 # 跨条拆词：某条以「假名 + 单个汉字」结尾，且下一条与它紧贴（≤ 这个间隔）→ 是一个词被切开了。
@@ -34,6 +32,10 @@ REPEAT_MIN_GAP = 30.0
 _PUNCT = re.compile(r"[\s、。，．,.!！?？…‥・「」『』（）()\[\]【】\-—~〜]+")
 _KANA = re.compile(r"[\u3040-\u309f\u30a0-\u30ff\u30fc]")
 _KANJI = re.compile(r"[\u4e00-\u9fff\u3005]")
+# 句末标点：前一条已经说完了，后面的短碎片就不是它的续接。
+_SENTENCE_END = re.compile(r"[。．！？!?…‥]\s*$")
+# 拖音只认日文假名（含长音符 ー）的重复。
+_ELONGATION_RE = re.compile(r"([\u3040-\u30ff])\1{%d,}" % (ELONGATION_MIN - 1))
 
 
 def normalize_text(text):
@@ -42,8 +44,13 @@ def normalize_text(text):
 
 
 def compress_elongation(text):
-    """把 ああああああ 这类拖音压到两个：ああ。"""
-    return re.sub(r"(.)\1{%d,}" % (ELONGATION_MIN - 1), r"\1" * ELONGATION_KEEP, text)
+    """把 ああああああ 这类拖音压到两个：ああ。
+
+    2026-10-24 修 Bug 7：只认日文假名（含长音符 ー）的重复。原来说"任意字符连排
+    4 个以上"都算拖音，结果数字被当拖音压：`1000000` → `100`、`1.000000` → `1.00`、
+    `13800000000` → `13800` —— 金额、电话、编号、小数会被静默改错。
+    """
+    return _ELONGATION_RE.sub(lambda m: m.group(1) * ELONGATION_KEEP, text)
 
 
 def compress_elongations(cues):
@@ -249,10 +256,12 @@ def fold_adjacent(cues):
 
 
 def merge_fragments(cues):
-    """把过短且没有实义的碎片并入相邻条。
+    """把过短、且只是「续接用的单个假名」的碎片并入相邻条。
 
-    条件偏保守：时长 < 0.5 秒、去标点后不超过 2 个字、且与相邻条几乎相接。
-    宁可不并，也不要把一句真实台词吞掉。
+    条件（2026-10-24 收紧，修 Bug 8）：时长 < 0.5 秒、去标点后**正好一个假名**
+    （ね / よ / さ…）、与相邻条几乎相接、且相邻条不是以句末标点收尾。
+    原来"2 字以内"就算碎片，把「はい」「うん」「えっ」「なに」「OK」「1」这类
+    完整短回答直接删掉了——那是台词，不是碎片。宁可不并，也不吞内容。
     返回 (新列表, 改动列表)。
     """
     out = []
@@ -260,10 +269,12 @@ def merge_fragments(cues):
     for cue in cues:
         text = normalize_text(cue.source)
         duration = cue.end - cue.start
-        short = duration < FRAGMENT_SECONDS and len(text) <= FRAGMENT_MAX_CHARS
         prev = out[-1] if out else None
         gap = cue.start - prev.end if prev else None
-        if short and prev is not None and 0 <= gap <= FRAGMENT_MAX_GAP:
+        continuation = (duration < FRAGMENT_SECONDS and len(text) == 1
+                        and _KANA.fullmatch(text) is not None)
+        prev_finished = bool(prev) and bool(_SENTENCE_END.search(prev.source))
+        if continuation and prev is not None and not prev_finished and 0 <= gap <= FRAGMENT_MAX_GAP:
             changes.append({"kind": "merge", "id": prev.id, "kept": prev.source,
                             "dropped": cue.source})
             out[-1] = Cue(prev.id, prev.start, max(prev.end, cue.end), prev.source, prev.zh)

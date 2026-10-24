@@ -2599,6 +2599,15 @@ class Application(tk.Tk):
         except (UserError, OSError) as exc:
             self.diagnostics.record("error", phase="error", **error_info(exc))
             messagebox.showerror("无法导出", save_error_text(exc))
+        except UnicodeError as exc:
+            # 2026-10-24 修 Bug 6：编码异常以前没接住——界面不提示，目录里留下半套导出。
+            # 正常情况下 ass.render 已自动改用 UTF-8，走到这里说明还有别的字符问题。
+            self.diagnostics.record("error", phase="error", **error_info(exc))
+            messagebox.showerror(
+                "无法导出",
+                "导出失败：字幕文件里有些字符存不成原来的编码。\n"
+                "请把这条字幕的文字和来源文件发来排查；SRT / TXT / ASS 可分别重试。\n"
+                "（详细原因已写进诊断包，导出诊断包时不需要另外说明。）")
 
     def export_diagnostics(self):
         if self.diagnostic_exporting:

@@ -304,5 +304,42 @@ class RunJobWiringTest(unittest.TestCase):
             self.assertFalse(any("轴整理" in line for line in logs))
 
 
+class NumbersAndShortRepliesTest(unittest.TestCase):
+    """2026-10-24 修的 Bug 7 / Bug 8。
+
+    Bug 7：拖音压缩曾对任意重复字符生效，把数字压坏（1000000 → 100）。
+    Bug 8：碎片合并只看时长和字数，把「はい」这类完整短回答直接删掉。
+    """
+
+    def test_numbers_are_not_compressed(self):
+        for text in ("1000000", "100000", "1.000000", "电话 13800000000",
+                     "价格是1000000元", "2026-10-24 16:00:00"):
+            with self.subTest(text=text):
+                self.assertEqual(polish.compress_elongation(text), text)
+
+    def test_kana_elongation_is_still_compressed(self):
+        self.assertEqual(polish.compress_elongation("これってああああああ"), "これってああ")
+        self.assertEqual(polish.compress_elongation("はいーーーーー"), "はいーー")
+        self.assertEqual(polish.compress_elongation("ああ"), "ああ")
+
+    def test_meaningful_short_replies_are_kept(self):
+        for reply in ("はい", "うん", "えっ", "なに", "OK", "1"):
+            with self.subTest(reply=reply):
+                cues, changes = polish.merge_fragments(
+                    [Cue(1, 0, 2, "そうですね"), Cue(2, 2.1, 2.4, reply)])
+                self.assertEqual([c.source for c in cues], ["そうですね", reply])
+                self.assertEqual(changes, [])
+
+    def test_single_kana_fragment_still_merges(self):
+        cues, changes = polish.merge_fragments([Cue(1, 0, 2, "そうだよ"), Cue(2, 2.1, 2.4, "ね")])
+        self.assertEqual([c.source for c in cues], ["そうだよ"])
+        self.assertEqual(changes[0]["dropped"], "ね")
+
+    def test_fragment_after_a_finished_sentence_is_kept(self):
+        cues, changes = polish.merge_fragments([Cue(1, 0, 2, "そうだよ。"), Cue(2, 2.1, 2.4, "ね")])
+        self.assertEqual([c.source for c in cues], ["そうだよ。", "ね"])
+        self.assertEqual(changes, [])
+
+
 if __name__ == "__main__":
     unittest.main()

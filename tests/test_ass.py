@@ -171,8 +171,9 @@ class AssProjectTests(unittest.TestCase):
                                  ["第一句", "带标签的第二句", "第一行\n第二行"])
                 self.assertEqual(bool(core.clean(project["cues"][0]["zh"])), expect_zh)
                 self.assertEqual(project["subtitle_mode"], "chinese" if expect_zh else "source")
-                # 这份样本是中文、没有假名，所以按现有启发式判成 en；选中文时直接定为 zh
-                self.assertEqual(project["language"], "zh" if expect_zh else "en")
+                # 这份样本是中文、没有假名；2026-10-24 修好后自动判断就是中文
+                # （原来只有"有假名=日文，否则英文"两档，会被判成 en —— 这里顺带改成正确期望）
+                self.assertEqual(project["language"], "zh")
 
     def test_japanese_source_is_detected_as_ja(self):
         p = self.dir / "jp.ass"

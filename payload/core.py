@@ -73,6 +73,16 @@ def clean(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def clean_ass_text(value):
+    """ASS 正文导出用：去掉多余空白，但**保留换行**。
+
+    换行在 ass.to_ass_text 里会写回成 \\N（ASS 的手动换行）。2026-10-24 修：
+    原来这里复用 clean()，换行被压成空格，编辑过的条目导出后 \\N 就丢了。
+    """
+    rows = [clean(row) for row in str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    return "\n".join(rows).strip("\n")
+
+
 @dataclass
 class Cue:
     id: int
@@ -177,22 +187,78 @@ def parse_time(value):
     return int(h) * 3600 + int(m) * 60 + int(s) + int(ms.ljust(3, "0")) / 1000
 
 
+# ---------- 字幕文件编码 ----------
+
+_FULL_KANA_RE = re.compile(r"[\u3040-\u30ff]")        # 平假名 + 片假名
+_HALF_KATA_RE = re.compile(r"[\uff61-\uff9f]")        # 半角片假名
+_PRIVATE_USE_RE = re.compile(r"[\ue000-\uf8ff]")      # 私用区
+_HAN_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+
+
+def _looks_like_japanese(text):
+    """cp932 解出来的文字是否像正常日文。
+
+    简体中文的 GBK/GB18030 字节用 cp932 也能"解开"（不抛错），解出来是一堆
+    半角片假名和私用区字符；真正的日文解出来有假名，而且没有这些怪字符。
+    """
+    return bool(_FULL_KANA_RE.search(text)) and not _HALF_KATA_RE.search(text) and not _PRIVATE_USE_RE.search(text)
+
+
+def decode_subtitle_bytes(raw):
+    """自动判断字幕文件的编码，返回 (文字, 猜测的编码名)。
+
+    2026-10-24 修：原来固定按 utf-8-sig → cp932 → gb18030 依次试，GBK/GB18030 的
+    简体中文字幕会被 cp932 "解开"成乱码（cp932 几乎能把 GBK 字节全解释成字符）。
+    现在：UTF-16 BOM 与严格 UTF-8 优先；不是 UTF-8 时同时试 gb18030 与 cp932，
+    只有 cp932 的结果像正常日文才用 cp932，其余一律按 GB18030（中文优先）。
+    """
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16"), "utf-16"
+    try:
+        return raw.decode("utf-8-sig"), "utf-8-sig"
+    except UnicodeDecodeError:
+        pass
+    decoded = {}
+    for name in ("gb18030", "cp932"):
+        try:
+            decoded[name] = raw.decode(name)
+        except UnicodeDecodeError:
+            continue
+    if not decoded:
+        raise UserError("无法识别字幕编码，请先另存为 UTF-8 编码的 SRT。")
+    if "cp932" in decoded and _looks_like_japanese(decoded["cp932"]):
+        return decoded["cp932"], "cp932"
+    if "gb18030" in decoded:
+        return decoded["gb18030"], "gb18030"
+    return decoded["cp932"], "cp932"
+
+
+def detect_source_language(cues):
+    """从原文正文猜语言：有假名→日文；有汉字→中文；都没有→英文。
+
+    2026-10-24 修：原来只有"有假名就日文，否则英文"两档，中文原文一律被标成
+    英文。标错会连带影响换行宽度、导出文件名和翻译时给模型的源语言。
+    """
+    text = "\n".join(c.source for c in cues if c.source)
+    if _FULL_KANA_RE.search(text):
+        return "ja"
+    if _HAN_RE.search(text):
+        return "zh"
+    return "en"
+
+
 def read_srt(path, encoding="auto", *, preserve_lines=False):
     try:
         raw = Path(path).read_bytes()
     except OSError as exc:
         raise UserError("无法读取 SRT，请检查文件是否存在，以及是否有读取权限。") from exc
-    data = None
-    encodings = (["utf-16"] if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else
-                 ["utf-8-sig", "cp932", "gb18030"]) if encoding == "auto" else [encoding]
-    for enc in encodings:
+    if encoding == "auto":
+        data, _ = decode_subtitle_bytes(raw)
+    else:
         try:
-            data = raw.decode(enc)
-            break
-        except UnicodeError:
-            pass
-    if data is None:
-        raise UserError("无法识别字幕编码，请先另存为 UTF-8 编码的 SRT。")
+            data = raw.decode(encoding)
+        except (UnicodeError, LookupError):
+            raise UserError("无法识别字幕编码，请先另存为 UTF-8 编码的 SRT。") from None
     data = data.replace("\r\n", "\n").replace("\r", "\n").strip()
     cues = []
     for block in re.split(r"\n\s*\n", data):
@@ -307,8 +373,7 @@ def read_ass_project(path, mode="source"):
     meta.update({"mode": mode,
                  "lines": [item["line"] for item in items],
                  "original": [item["text"] for item in items]})
-    language = "zh" if mode == "chinese" else (
-        "ja" if any(re.search(r"[\u3040-\u30ff]", c.source) for c in cues) else "en")
+    language = "zh" if mode == "chinese" else detect_source_language(cues)
     return {"version": 1, "name": Path(path).stem, "input": str(Path(path).resolve()),
             "language": language, "recognition_complete": True,
             "subtitle_mode": "chinese" if mode == "chinese" else "source",
@@ -336,9 +401,11 @@ def export_ass_from_source(meta, cues, out_path, font_sizes=None, style_edits=No
     for index, cue in enumerate(cues):
         if index >= len(lines):
             break
-        value = clean(cue.source) if chinese_mode else (clean(cue.zh) or clean(cue.source))
+        value = clean_ass_text(cue.source) if chinese_mode else (
+            clean_ass_text(cue.zh) or clean_ass_text(cue.source))
         was = clean(original[index]) if index < len(original) else ""
-        if value and value != was:
+        # 比较时仍按"折叠空白"的形式比，这样没改过的条目不会被误判成改过、照旧一个字节不动。
+        if value and clean(value) != was:
             texts[lines[index]] = value
     target = Path(out_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -392,7 +459,7 @@ def import_srt_project(path, mode="source", language="", chinese_path=None,
             c.source, c.zh = clean(" ".join(lines[:split])), clean(" ".join(lines[split:]))
     if not language:
         match = re.search(r"_(?:原文|混合)_([a-z]{2,3})(?:_zh)?$", Path(path).stem)
-        language = match.group(1) if match else ("ja" if any(re.search(r"[\u3040-\u30ff]", c.source) for c in cues) else "en")
+        language = match.group(1) if match else detect_source_language(cues)
     return {"version": 1, "name": re.sub(r"_(?:原文|中文|混合)_[a-z]{2,3}(?:_zh)?$", "", Path(path).stem),
             "input": str(Path(path).resolve()), "language": language, "recognition_complete": True,
             "subtitle_mode": "chinese" if mode == "chinese" else "source",
@@ -2170,7 +2237,7 @@ def run_job(config, stop, emit):
         if source.suffix.lower() == ".srt":
             emit("diagnostic", {"event": "media_info", "actual_device": "not_used"})
             cues = read_srt(source)
-            lang = config["language"] or ("ja" if any(re.search(r"[\u3040-\u30ff]", c.source) for c in cues) else "en")
+            lang = config["language"] or detect_source_language(cues)
             from_asr = False
         else:
             cues, lang = transcribe(source, config["asr_model"], config["language"], config["device"],

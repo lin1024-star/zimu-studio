@@ -9,7 +9,8 @@
 · 每条字幕的图层、样式名、角色名、边距、特效字段
 · 没有文字的绘图行（{\\p1}）会整条原样保留，且**不会**被当作字幕送去翻译
 
-本文档对象不依赖 core，只吃文本、吐字节，便于单独测试。
+本文档对象不依赖 core 的业务逻辑，只吃文本、吐字节，便于单独测试；
+编码自动判断复用 core.decode_subtitle_bytes，避免 SRT 与 ASS 两套规则漂移。
 """
 from __future__ import annotations
 
@@ -17,7 +18,9 @@ import re
 from pathlib import Path
 
 EVENT_FIELDS = ["Layer", "Start", "End", "Style", "Name", "MarginL", "MarginR", "MarginV", "Effect"]
-TAG_RE = re.compile(r"\{[^}]*\}")
+# 真正的 ASS 标签是**未转义**的 {…}；转义写法 \{ \} 是正文里的字面花括号，
+# 不能当标签剥掉（2026-10-24 修：\{测试\} 曾被整段吞掉，编辑后导出还会错位）。
+TAG_RE = re.compile(r"(?<!\\)\{[^}]*\}")
 
 
 class AssError(ValueError):
@@ -25,18 +28,26 @@ class AssError(ValueError):
 
 
 def _detect(raw):
-    """返回 (bom, 编码名)。BOM 原样保留，编码按日文优先的顺序试。"""
+    """返回 (bom, 编码名)。BOM 原样保留。
+
+    2026-10-24：不再自己写一套"utf-8 → cp932 → gb18030"的顺序试，改用 core 里和
+    SRT 同一套判断（只借编码判断，不碰 core 的业务逻辑）。原顺序下，简体中文的
+    GB18030 ASS 会被 cp932 解成乱码（cp932 几乎能把 GBK 字节全解释成字符、不抛错）。
+    """
     if raw.startswith(b"\xef\xbb\xbf"):
         return b"\xef\xbb\xbf", "utf-8"
-    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
-        return raw[:2], "utf-16"
-    for name in ("utf-8", "cp932", "gb18030"):
-        try:
-            raw.decode(name)
-            return b"", name
-        except UnicodeDecodeError:
-            continue
-    raise AssError("无法识别这个 ASS 文件的编码，请先用 Aegisub 另存为 UTF-8。")
+    # UTF-16 的字节序必须跟着 BOM 走：去掉 BOM 再交给统称 "utf-16" 解码，
+    # 大端文件会被按小端解释（2026-10-24 修：UTF-16BE 的 ASS 之前读不出来）。
+    if raw.startswith(b"\xff\xfe"):
+        return raw[:2], "utf-16-le"
+    if raw.startswith(b"\xfe\xff"):
+        return raw[:2], "utf-16-be"
+    from core import UserError as CoreUserError, decode_subtitle_bytes
+    try:
+        _, name = decode_subtitle_bytes(raw)
+    except CoreUserError:
+        raise AssError("无法识别这个 ASS 文件的编码，请先用 Aegisub 另存为 UTF-8。") from None
+    return b"", ("utf-8" if name in ("utf-8", "utf-8-sig") else name)
 
 
 def parse_time(value):
@@ -65,7 +76,7 @@ def tag_prefix_suffix(ass_text):
     head = []
     pos = 0
     while True:
-        m = re.match(r"\s*(\{[^}]*\})", ass_text[pos:])
+        m = re.match(r"\s*((?<!\\)\{[^}]*\})", ass_text[pos:])
         if not m:
             break
         head.append(m.group(1))
@@ -73,7 +84,7 @@ def tag_prefix_suffix(ass_text):
     rest = ass_text[pos:]
     tail = []
     while True:
-        m = re.search(r"(\{[^}]*\})\s*$", rest)
+        m = re.search(r"((?<!\\)\{[^}]*\})\s*$", rest)
         if not m:
             break
         tail.insert(0, m.group(1))
@@ -152,8 +163,10 @@ class Document:
     def from_parts(cls, text, encoding, bom_hex, eol_name):
         """从项目里存的记录复原。"""
         body = text.replace("\r\n", "\n").replace("\r", "\n")
-        return cls(body.split("\n"), encoding,
-                   bytes.fromhex(bom_hex) if bom_hex else b"",
+        bom = bytes.fromhex(bom_hex) if bom_hex else b""
+        if encoding == "utf-16":     # 旧项目存的是统称，按 BOM 定字节序（2026-10-24）
+            encoding = "utf-16-be" if bom.startswith(b"\xfe\xff") else "utf-16-le"
+        return cls(body.split("\n"), encoding, bom,
                    "\r\n" if eol_name == "crlf" else "\n")
 
     def snapshot(self):
@@ -293,4 +306,10 @@ class Document:
                 out[info["line"]] = "Style:" + ",".join(fields)
 
         body = self.eol.join(out)
-        return self.bom + body.encode(self.encoding)
+        try:
+            return self.bom + body.encode(self.encoding)
+        except UnicodeEncodeError:
+            # 2026-10-24 修 Bug 6：原文件是 CP932 这类窄编码时，翻成中文后正文里有它存不下的字。
+            # 这时改用 UTF-8（带 BOM）写出，导出照常完成；否则会抛异常，界面又接不住，
+            # 只会留下半套导出文件。ASS 用 UTF-8 BOM 是各播放器与 Aegisub 都认的写法。
+            return b"\xef\xbb\xbf" + body.encode("utf-8")
