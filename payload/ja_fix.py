@@ -6,9 +6,9 @@
 识别模型有时写对（汚職）、有时写成一个日语里根本不存在的组合（お食）——
 同一段素材里**写错 19 处、写对 17 处**。
 
-换模型解决不了：turbo / anime-whisper / small 三个都写「お食」——
-音频里就没有区分这两个词的信息。所以走硬替换：识别之后、翻译之前按表改对。
-**这一层是确定性的，不靠模型猜。**
+当时测试的 turbo / anime-whisper / small 都出现了「お食」，
+所以在识别之后、翻译之前按表纠正。这不代表其他模型没有提升空间。
+替换是确定性的，但短规则可能误伤正常词，需要保护和适用范围。
 
 改完实测（同一批 17 条 × 四种组合：v4-pro / flash × 带术语表 / 不带）：
 
@@ -159,6 +159,29 @@ def ensure_table(root=None):
     return path
 
 
+def _with_seed_word_protections(table):
+    """保护已知种子短规则会误伤的常用词；明确写出的完整词规则优先。
+
+    在最终合并的规则上判断，因此本片规则覆盖全局短规则后不会受到额外限制。
+    只针对两条历史种子映射，不改变其他手工规则，也不改写用户的表文件。
+    这是有限的已知词保护，不是对任意日文词的语义判断。
+    """
+    mapping = dict(table)
+    additions = []
+    for wrong, right, words in (
+        ("お食", "汚職", ("お食事", "お食い初め")),
+        ("お職", "汚職", ("お職場",)),
+    ):
+        if mapping.get(wrong) != right:
+            continue
+        for word in words:
+            if word not in mapping:
+                additions.append((word, word))
+    if not additions:
+        return table
+    return sorted([*table, *additions], key=lambda pair: (-len(pair[0]), pair[0]))
+
+
 def _compile(table):
     """把表编成一个正则：交替分支按「长的在前」排，匹配到就是最长的那个。"""
     return re.compile("|".join(re.escape(wrong) for wrong, _ in table))
@@ -280,6 +303,7 @@ def apply_text(text, table):
     source = text or ""
     if not source or not table:
         return source, []
+    table = _with_seed_word_protections(table)
     mapping = dict(table)
     counts = {}
 
@@ -300,6 +324,7 @@ def fix_cues(cues, table=None, root=None):
     """
     if table is None:
         table = load_table(root)
+    table = _with_seed_word_protections(table)
     out, changes = [], []
     for cue in cues:
         fixed, hits = apply_text(cue.source, table)

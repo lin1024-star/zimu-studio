@@ -13,6 +13,7 @@
   ② 同一个左边写了两次时，**真规则优先于保护词**（手滑写了保护词不会把规则弄没）
 """
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -35,14 +36,12 @@ class ProtectionWordTest(unittest.TestCase):
         self.assertEqual(fixed, "お職場に行く", "保护词没挡住短规则")
         self.assertEqual(hits, [], "保护词不该进改动清单")
 
-    def test_without_protection_the_shorter_rule_does_damage(self):
-        """反证：没有保护词时，短规则确实会咬进正常词里。
-
-        这条不是"希望这样"，是把风险钉在这里 —— 以后谁改长了规则，能立刻看见。
-        """
-        table = ja_fix.parse_table("お職 = 汚職\n")
-        fixed, _ = ja_fix.apply_text("お職場に行く", table)
-        self.assertEqual(fixed, "汚職場に行く", "预期短规则会误伤，结果没有 —— 那说明匹配方式变了，要重看")
+    def test_other_short_rules_still_need_explicit_protection(self):
+        """内置保护只覆盖已确认的种子规则，任意手工短规则仍是子串替换。"""
+        table = ja_fix.parse_table("ABC = X\n")
+        self.assertEqual(ja_fix.apply_text("ABCDE", table)[0], "XDE")
+        protected = ja_fix.parse_table("ABC = X\nABCDE = ABCDE\n")
+        self.assertEqual(ja_fix.apply_text("ABCDE", protected), ("ABCDE", []))
 
     def test_real_rule_still_works_alongside_protection(self):
         table = ja_fix.parse_table("お職場 = お職場\nお職警官 = 汚職警官\nお職 = 汚職\n")
@@ -112,6 +111,63 @@ class RealTableTest(unittest.TestCase):
         self.assertIn(("お職", "汚職"), table)
         self.assertIn(("お職警官", "汚職警官"), table)
         self.assertEqual(len(table), 7)
+
+
+class SeedWordSafetyTest(unittest.TestCase):
+    def test_normal_meal_and_workplace_words_are_preserved(self):
+        table = ja_fix.parse_table(ja_fix.SEED)
+        for text in ("お食事を用意しました。", "お食事券をいただきました。",
+                     "お食い初めのお祝いです。", "お職場に行きます。"):
+            with self.subTest(text=text):
+                self.assertEqual(ja_fix.apply_text(text, table), (text, []))
+
+    def test_protection_and_real_correction_in_same_cue(self):
+        table = ja_fix.parse_table(ja_fix.SEED)
+        text, hits = ja_fix.apply_text("お食事の後でお食系官とお職警官に会う", table)
+        self.assertEqual(text, "お食事の後で汚職警官と汚職警官に会う")
+        self.assertCountEqual(hits, [("お食系官", "汚職警官", 1), ("お職警官", "汚職警官", 1)])
+
+    def test_explicit_complete_word_rule_still_wins(self):
+        table = ja_fix.parse_table("お食 = 汚職\nお食事 = 汚職\n")
+        self.assertEqual(ja_fix.apply_text("お食事", table), ("汚職", [("お食事", "汚職", 1)]))
+
+    def test_other_manual_mapping_is_not_changed(self):
+        table = ja_fix.parse_table("お食 = 料理\n")
+        self.assertEqual(ja_fix.apply_text("お食事", table)[0], "料理事")
+
+    def test_existing_table_is_protected_without_rewriting_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ja_fix.TABLE_NAME
+            path.write_text(ja_fix.SEED, encoding="utf-8")
+            before = path.read_bytes()
+            cues = [Cue(1, 1.25, 3.5, "お食事を用意しました。", "饭准备好了。"),
+                    Cue(2, 4.0, 5.5, "お食大好き警察官", "贪污警察")]
+            fixed, report = ja_fix.fix_cues(cues, root=tmp)
+            self.assertIs(fixed[0], cues[0])
+            self.assertEqual(fixed[1], Cue(2, 4.0, 5.5, "汚職大好き警察官", "贪污警察"))
+            self.assertEqual(report["cues_changed"], 1)
+            self.assertEqual(report["replacements"], 1)
+            self.assertEqual(report["table_size"], 7)
+            self.assertEqual(report["protections"], 3)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_project_complete_word_rule_overrides_global_protection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ja_fix.TABLE_NAME).write_text(ja_fix.SEED, encoding="utf-8")
+            table = ja_fix.merged_table(root=tmp, rules=[("お食事", "汚職")])
+            self.assertEqual(ja_fix.apply_text("お食事", table)[0], "汚職")
+
+    def test_project_short_rule_override_keeps_its_literal_meaning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ja_fix.TABLE_NAME).write_text(ja_fix.SEED, encoding="utf-8")
+            table = ja_fix.merged_table(root=tmp, rules=[("お食", "料理")])
+            self.assertEqual(ja_fix.apply_text("お食事", table)[0], "料理事")
+
+    def test_table_cache_uses_the_same_protection_during_text_correction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ja_fix.TABLE_NAME).write_text(ja_fix.SEED, encoding="utf-8")
+            table = ja_fix.TableCache(tmp).get()
+            self.assertEqual(ja_fix.apply_text("お食事券とお職警官", table)[0], "お食事券と汚職警官")
 
 
 if __name__ == "__main__":
