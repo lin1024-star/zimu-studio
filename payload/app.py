@@ -553,9 +553,9 @@ class Application(tk.Tk):
         ccheck_row = ttk.Frame(main)
         ccheck_row.grid(row=9, column=0, sticky="ew", pady=(6, 0))
         self.ccheck_button = ttk.Button(ccheck_row, text="中文自检（找可能翻错的句子）",
-                                        command=self.run_chinese_check)
+                                        command=self.show_chinese_check)
         self.ccheck_button.pack(side="left")
-        ttk.Label(ccheck_row, text="翻译完自动跑一遍；这里可以随时重跑。只报不改，点结果能跳到那一条。",
+        ttk.Label(ccheck_row, text="翻译完自动跑一遍；点开可看已保存的结果，需要时再点「重新检查」。只报不改。",
                   style="Muted.TLabel").pack(side="left", padx=8)
 
         export = ttk.Frame(main)
@@ -1176,6 +1176,7 @@ class Application(tk.Tk):
         self.progress["value"] = 0
         self.status_var.set("已选择素材。")
         self.sync_subtitle_mode()
+        self.update_ccheck_button(None)
 
     def choose_output(self):
         path = filedialog.askdirectory(title="选择项目输出目录")
@@ -1633,6 +1634,8 @@ class Application(tk.Tk):
         self.sync_subtitle_mode()
         self.refresh_glossary_hint()          # 有项目了 → 提示里的作用范围要从「全局默认」变「本期」
         self.select_cue()
+        check = self.saved_chinese_check()
+        self.update_ccheck_button(len(check["items"]) if check is not None else None)
 
     def clear_editor(self):
         for text in (self.source_text, self.zh_text):
@@ -2108,6 +2111,25 @@ class Application(tk.Tk):
             return
         self.after(600, lambda: self.run_chinese_check(auto=True))
 
+    def saved_chinese_check(self):
+        """区分尚未检查与已经检查但没有发现问题。"""
+        check = (self.project or {}).get("chinese_check")
+        if isinstance(check, dict) and isinstance(check.get("items"), list):
+            return check
+        return None
+
+    def show_chinese_check(self):
+        """查看已保存的结果不调用接口；重新检查仍由原有按钮触发。"""
+        check = self.saved_chinese_check()
+        if check is None:
+            self.run_chinese_check()
+            return
+        ChineseCheckDialog(self, check["items"],
+                           total=check.get("total", len(self.project.get("cues") or [])),
+                           batches=check.get("batches", 0), failed=check.get("failed", 0),
+                           checked_at=check.get("at"),
+                           on_jump=self.jump_to_cue, on_rerun=self.run_chinese_check)
+
     def run_chinese_check(self, auto=False):
         """中文自检：挑出「可能翻错、会让你剪错」的句子。
 
@@ -2179,6 +2201,9 @@ class Application(tk.Tk):
             self.project["chinese_check"] = {
                 "at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "items": items,
+                "total": total,
+                "batches": result.get("batches", 0),
+                "failed": result.get("failed", 0),
             }
             if self.project_path:
                 core.save_project(self.project_path, self.project)
@@ -2189,18 +2214,15 @@ class Application(tk.Tk):
         if not auto:
             # 不做成模态：双击跳转后这个窗口会自己关掉，但如果他不双击、
             # 只是想一边看清单一边改，模态会挡住主界面 ✗（使用者反馈过"没有反馈"）
-            ChineseCheckDialog(self, items, total=total,
-                               batches=result.get("batches", 0),
-                               failed=result.get("failed", 0),
-                               on_jump=self.jump_to_cue,
-                               on_rerun=self.run_chinese_check)
+            self.show_chinese_check()
 
     def update_ccheck_button(self, count):
         """按钮文字跟着结果走：有可疑就写几处，让人一眼看见。"""
         if not hasattr(self, "ccheck_button"):
             return
         self.ccheck_button.configure(
-            text=("⚠ %d 处可能翻错（点开看）" % count) if count else "中文自检（没发现问题）")
+            text=("中文自检（找可能翻错的句子）" if count is None else
+                  ("⚠ %d 处可能翻错（点开看）" % count) if count else "中文自检（没发现问题）"))
 
     def check_timeline(self):
         """时间轴体检：不听音频，只查字幕本身的硬伤。

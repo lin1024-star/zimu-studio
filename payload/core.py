@@ -23,7 +23,7 @@ from pathlib import Path
 from diagnostics import error_info
 from paths import data_root
 
-APP_VERSION = "2.5.2"
+APP_VERSION = "2.5.3"
 DEFAULT_MODEL = "deepseek-flash"
 API_URL = "https://api.deepseek.com/chat/completions"
 LANGUAGES = {"en": "英语", "ja": "日语", "zh": "中文"}
@@ -125,7 +125,8 @@ def save_project(path, project):
     # 里面只有字幕内容与样式，不含任何密钥；缺了它，重新打开项目就不知道要按原格式重建。
     allowed = {"version", "input", "fingerprint", "recognition", "language", "cues",
                "recognition_complete", "translation_profile", "last_export", "name", "subtitle_mode",
-               "axis_raw", "axis_review", "ass", "ass_style_mode"}
+               "axis_raw", "axis_review", "ass", "ass_style_mode",
+               "ja_fix_local", "chinese_check"}
     safe = {k: v for k, v in project.items() if k in allowed}
     atomic_write(path, json.dumps(safe, ensure_ascii=False, indent=2))
 

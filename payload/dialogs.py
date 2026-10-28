@@ -647,7 +647,7 @@ class ChineseCheckDialog(tk.Toplevel):
     """
 
     def __init__(self, parent, items, total=None, batches=0, failed=0,
-                 on_jump=None, on_rerun=None):
+                 on_jump=None, on_rerun=None, checked_at=None):
         super().__init__(parent)
         self.on_jump = on_jump or (lambda _id: None)
         self.on_rerun = on_rerun
@@ -659,7 +659,10 @@ class ChineseCheckDialog(tk.Toplevel):
         self.geometry("1060x720")
         self.minsize(760, 420)
 
-        ttk.Label(self, text="翻译完之后再扫一遍，挑出可能翻错、会让你剪错的地方。只报不改。",
+        intro = "翻译完之后再扫一遍，挑出可能翻错、会让你剪错的地方。只报不改。"
+        if checked_at:
+            intro = f"检查时间：{checked_at}。显示已保存的结果；修改字幕后，请按需要点「重新检查」。"
+        ttk.Label(self, text=intro,
                   style="Muted.TLabel").pack(anchor="w")
 
         head = tk.Frame(self)
@@ -684,7 +687,7 @@ class ChineseCheckDialog(tk.Toplevel):
         self.status.pack(fill="x", pady=(0, 6))
 
         if not self.items:
-            ttk.Label(self, text="这份素材的中文没有看出问题 —— 可以直接导出。\n"
+            ttk.Label(self, text="这次检查没有发现可疑的地方。\n"
                                  "（自检只找「会让剪辑剪错」的错：专名听错、意思反了、"
                                  "中文不成话、前后矛盾。措辞不同不算。）",
                       style="Muted.TLabel", justify="left").pack(anchor="w", pady=16)
