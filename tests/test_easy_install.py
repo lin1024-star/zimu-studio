@@ -1,4 +1,7 @@
 import io
+import os
+import subprocess
+import sys
 import json
 from pathlib import Path
 import tempfile
@@ -50,6 +53,15 @@ class EasyInstallTests(unittest.TestCase):
         self.assertNotIn('sk-QA-CANARY', text)
         self.assertNotIn('api_key', data)
 
+    def test_tiny_finalize_cli_creates_settings(self):
+        env = dict(os.environ, SUBTITLE_STUDIO_ROOT=str(self.root), PYTHONDONTWRITEBYTECODE="1")
+        result = subprocess.run([sys.executable, "-B", "-X", "utf8", easy_runtime.__file__,
+                                 "finalize", "--model", "tiny"], env=env, capture_output=True,
+                                text=True, encoding="utf-8", timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads((self.root / "settings.json").read_text("utf-8"))
+        self.assertEqual(data["asr_model"], "tiny")
+
     def test_install_repair_preserves_existing_settings(self):
         before = b'{"model":"chosen-model","output":"user-folder","device":"CPU"}'
         p = self.root / 'settings.json'
@@ -72,7 +84,7 @@ class EasyInstallTests(unittest.TestCase):
         self.assertNotIn('PRIVATE_SOURCE', report)
         self.assertNotIn('sk-CANARY', report)
         self.assertNotIn(str(self.root), report)
-        self.assertEqual(json.loads(report)['app_version'], '2.0')
+        self.assertEqual(json.loads(report)['app_version'], core.APP_VERSION)
 
 
 REPO = Path(__file__).resolve().parents[1]

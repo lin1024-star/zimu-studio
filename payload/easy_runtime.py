@@ -53,7 +53,8 @@ def gpu_setup():
 
 
 def diagnose():
-    result = {"app_version": "2.0", "python": platform.python_version(),
+    from core import APP_VERSION
+    result = {"app_version": APP_VERSION, "python": platform.python_version(),
               "os": platform.system() + " " + platform.release(), "machine": platform.machine(),
               "free_disk_gb": round(shutil.disk_usage(ROOT).free / 1e9, 2), "packages": {}}
     for name in ["faster-whisper", "ctranslate2", "av", "onnxruntime", "numpy", "huggingface-hub"]:
@@ -69,7 +70,7 @@ def diagnose():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["probe-basic", "probe-asr", "finalize", "gpu", "diagnose"])
-    parser.add_argument("--model", choices=["small", "turbo", "srt"], default="small")
+    parser.add_argument("--model", choices=["small", "turbo", "tiny", "srt"], default="small")
     parser.add_argument("--gpu", action="store_true")
     args = parser.parse_args()
     try:
