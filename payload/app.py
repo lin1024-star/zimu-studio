@@ -817,27 +817,38 @@ class Application(tk.Tk):
                                    wraplength=900, justify="left")
         self.live_last.pack(anchor="w", pady=(2, 8))
 
-        box = ttk.LabelFrame(page, text="这一场的结果", padding=10)
-        box.pack(fill="x", pady=(4, 8))
+        box = ttk.LabelFrame(page, text="这一场的结果（在这个窗口启动的实时字幕）", padding=10)
+        box.pack(fill="x", pady=(4, 6))
         self.live_export_srt = ttk.Button(box, text="导出 SRT（原文＋中文）…",
                                           command=lambda: self.export_live("srt"), state="disabled")
         self.live_export_srt.pack(side="left")
         self.live_export_txt = ttk.Button(box, text="导出 TXT…",
                                           command=lambda: self.export_live("txt"), state="disabled")
         self.live_export_txt.pack(side="left", padx=8)
-        # 2026-10-29：单独打开的实时字幕（桌面图标）结果只在那个进程里，主界面按
-        # 「运行记录」只读地把它导出来 —— 不用再启动第二份，也不动正在跑的那一份 ✓
-        self.live_export_log = ttk.Button(box, text="从运行记录导出…",
-                                          command=self.export_live_log)
-        self.live_export_log.pack(side="left", padx=8)
         self.live_count = ttk.Label(box, text="还没有内容", style="Muted.TLabel")
         self.live_count.pack(side="left", padx=10)
+
+        # 2026-10-29：单独打开的实时字幕（桌面图标）结果只在那个进程里，主界面按
+        # 「运行记录」只读地把它认出来再导出 —— 不用再启动第二份，也不动正在跑的那一份 ✓
+        extra = ttk.LabelFrame(page, text="单独打开的实时字幕（从桌面图标开的）", padding=10)
+        extra.pack(fill="x", pady=(0, 8))
+        self.live_detect_btn = ttk.Button(extra, text="识别正在运行的实时字幕",
+                                          command=self.detect_external_live)
+        self.live_detect_btn.pack(side="left")
+        self.live_export_detected = ttk.Button(extra, text="导出识别到的这一场…",
+                                               command=self.export_detected_live, state="disabled")
+        self.live_export_detected.pack(side="left", padx=8)
+        self.detected_live = None
+        self.live_detected = ttk.Label(
+            extra, text="点「识别」把那一场认出来（只读记录，不启动第二份）",
+            style="Muted.TLabel", wraplength=820, justify="left")
+        self.live_detected.pack(side="left", padx=10)
 
         ttk.Label(page, text="用法：先让电脑放出声音（视频、直播、游戏都行），再点「启动实时字幕」。\n"
                              "悬浮字幕窗上可以：暂停、换音源、调外观（透明度/字号/宽度）、当场加术语。\n"
                              "术语表用的就是「翻译与识别设置」页那一份（点过「保存设置」就生效）。\n"
                              "如果实时字幕是从桌面图标单独开的：不用在这个窗口再启动一份，\n"
-                             "点「从运行记录导出…」就能把那一场导出来（只读记录，不影响正在跑的那一份）。",
+                             "点「识别正在运行的实时字幕」，认出来以后点「导出识别到的这一场…」。",
                   style="Muted.TLabel", justify="left").pack(anchor="w", pady=(6, 0))
         self.refresh_live()           # 每秒刷一次这一页（没启动时也刷，句数会跟着变 ✓）
 
@@ -982,17 +993,18 @@ class Application(tk.Tk):
         if age > 20:
             return ""
         return ("状态：检测到另一份实时字幕正在运行 —— 这里不用再启动，"
-                "可直接点「从运行记录导出…」")
+                "点「识别正在运行的实时字幕」就能把那一场认出来")
 
-    def export_live_log(self):
-        """把「单独打开的那份实时字幕」这一场导出来。
+    def detect_external_live(self):
+        """「识别」单独打开的那份实时字幕这一场（只读它的运行记录）。
 
         2026-10-29 使用者反馈：先单独开了实时字幕（桌面图标），再开字幕工坊 ——
         字幕工坊里看不到那一场，也就导不出来。原因：那一场的结果只在**那个进程的
-        内存**里；两边唯一共用的痕迹是运行记录。所以这里只读记录文件：
+        内存**里；两边唯一共用的痕迹是运行记录。这里只读记录文件：
         不启动第二份、不停止也不干扰正在跑的那一份 ✓
 
-        时间轴是估算的（记录里没有每条的开始/结束时间）：见 live/logimport.py 的说明。
+        认出之后不马上导出，而是把「几点开始、多少句、最近一句」显示在页面上，
+        由使用者确认后再导 —— 这样他知道导的是哪一场。
         """
         live = getattr(self, "live", None)
         if live is not None and getattr(live, "started_at", None):
@@ -1000,7 +1012,7 @@ class Application(tk.Tk):
                 "这一份正在当前窗口里跑",
                 "当前这一份实时字幕就是从这个窗口启动的，直接用上面的"
                 "「导出 SRT / 导出 TXT」即可。\n"
-                "「从运行记录导出…」是给「从桌面图标单独打开的实时字幕」用的。")
+                "「识别正在运行的实时字幕」是给「从桌面图标单独打开的实时字幕」用的。")
             return
         from live import logimport
         path = self.live_log_path()
@@ -1018,9 +1030,24 @@ class Application(tk.Tk):
                 "运行记录里还没找到「整句」—— 刚启动时只有半句。\n"
                 "等它出几条完整字幕，再点一次。")
             return
+        self.detected_live = result
+        started = result["started"] or "记录开头"
+        self.live_detected.configure(
+            text=f"识别到了：{started} 开始 · 这一场 {len(cues)} 句 · "
+                 f"最近一句「{cues[-1]['zh']}」")
+        self.live_export_detected.configure(state="normal")
+        self.log(f"识别到另一份实时字幕的这一场：{len(cues)} 句（{started} 起）")
+
+    def export_detected_live(self):
+        """把刚「识别」出来的那一场导出（SRT 或 TXT，按保存的扩展名）。"""
+        result = getattr(self, "detected_live", None)
+        cues = (result or {}).get("cues") or []
+        if not cues:
+            messagebox.showinfo("还没识别", "先点「识别正在运行的实时字幕」，认出那一场之后再导出。")
+            return
         default = time.strftime("实时字幕记录_%Y%m%d_%H%M") + ".srt"
         path_out = filedialog.asksaveasfilename(
-            title="从运行记录导出这一场实时字幕",
+            title="导出识别到的这一场实时字幕",
             defaultextension=".srt", initialfile=default,
             filetypes=[("SRT 字幕", "*.srt"), ("文本文件", "*.txt")])
         if not path_out:
@@ -1036,14 +1063,14 @@ class Application(tk.Tk):
             with open(path_out, "w", encoding="utf-8", newline="") as handle:
                 handle.write(body)
         except Exception as exc:          # noqa: BLE001
-            self.log(f"从运行记录导出失败：{type(exc).__name__}: {exc}")
+            self.log(f"导出识别到的实时字幕失败：{type(exc).__name__}: {exc}")
             messagebox.showerror("导出失败", friendly_errors.brief(exc))
             return
-        since = f"（记录从 {result['started']} 开始）" if result["started"] else ""
-        self.log(f"从运行记录导出 {len(rows)} 句 → {path_out}")
+        since = f"（记录从 {result['started']} 开始）" if result.get("started") else ""
+        self.log(f"已导出识别到的实时字幕 {len(rows)} 句 → {path_out}")
         messagebox.showinfo(
             "导出好了",
-            f"从运行记录导出 {len(rows)} 句{since}：\n{path_out}\n\n"
+            f"导出 {len(rows)} 句{since}：\n{path_out}\n\n"
             "说明：记录里没有每条的开始/结束时间，时间轴是按「显示时刻 − 延迟」估算的，\n"
             "拿去整理/参考够用；要精确时间轴请在字幕工坊里自己跑识别。")
 
