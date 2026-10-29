@@ -908,10 +908,13 @@ class Application(tk.Tk):
         try:
             if live is not None:
                 st = live.stats()
+                parts = st.get("parts") or {}
+                part_txt = (f"　拆解 识别{parts['recog']:.1f}+等句{parts['assembly']:.1f}"
+                            f"+翻译{parts['trans']:.1f}") if parts else ""
                 self.live_stats.configure(
                     text=f"运行时长 {st['minutes']:.1f} 分钟　延迟中位 {st['median']:.1f}s　"
                          f"每步 {st['per_step']:.2f}s / 预算 {st['budget']:.1f}s　"
-                         f"已出 {st['sentences']} 句")
+                         f"已出 {st['sentences']} 句{part_txt}")
                 if live.history:
                     last = live.history[-1]
                     self.live_last.configure(

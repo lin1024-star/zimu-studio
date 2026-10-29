@@ -60,8 +60,15 @@ DEFAULTS = {
     "maxchars": 30,        # 一句最长多少字就送去翻译（调小会让字幕变碎，保持 30）
     # 攒够这么多字就先把「半句」翻出来显示，整句好了再替换同一行。
     # 看直播的人等的是「现在在说什么」，先给半句比多等一秒半强。
-    "partial_chars": 12,
-    "maxwait": 4.0,        # 攒够这么久也送去翻译，避免一直等不到静音
+    #
+    # 2026-10-29 从 12 收到 8：使用者实测「一句要 7 秒才出来」。日志拆解显示
+    # 「等整句定稿」平均要 1.5~2.5 秒（连续说话时没有 0.7 秒停顿就一直攒）——
+    # 8 个字就先发半句，能早 1~1.5 秒看到内容；代价是半句更短、整句替换会多跳一次。
+    "partial_chars": 8,
+    # 攒够这么久也送去翻译，避免一直等不到静音。
+    # 2026-10-29 从 4.0 收到 2.5：连续说话时这一项直接顶满，就是「7 秒」里最大的
+    # 一块之一。收到 2.5 秒后，长句最多再等 2.5 秒就会先出半句（整句仍会随后替换）。
+    "maxwait": 2.5,
     "maxlag": 10.0,        # 积压超过这么多秒就认了、跳掉一段，别让字幕越来越旧
 }
 
@@ -121,8 +128,11 @@ class SentenceAssembler:
         if len(text) < self.cfg["partial_chars"]:
             return
         self.partial_sent = True
+        # 带上两个墙钟时间：一个是「最后一个词提交」的时刻，一个是「这句交给翻译」的
+        # 时刻。两者之差就是「等句子说完/凑长度」花掉的时间 —— 延迟拆解要用（2026-10-29）。
         self.on_sentence({"id": self.sentence_id, "partial": True,
-                          "start": self.words[0][0], "end": self.words[-1][1], "ja": text})
+                          "start": self.words[0][0], "end": self.words[-1][1], "ja": text,
+                          "commit_wall": self.last_feed_wall, "flush_wall": time.time()})
 
     def flush_if_stale(self, committed_until, now_wall=None):
         """该不该把手上这半句交出去。
@@ -148,7 +158,9 @@ class SentenceAssembler:
         text = self._join(self.words).strip()
         if text:
             self.on_sentence({"id": self.sentence_id, "partial": False,
-                              "start": self.words[0][0], "end": self.words[-1][1], "ja": text})
+                              "start": self.words[0][0], "end": self.words[-1][1], "ja": text,
+                              "commit_wall": self.last_feed_wall,
+                              "flush_wall": time.time()})
         self.words = []
         self.pending_since = 0.0
         self.partial_sent = False
@@ -409,6 +421,8 @@ class Translator(threading.Thread):
                 self.stats["dropped"] += 1
             except queue.Empty:
                 break
+        # 「交给翻译」的时刻：排队等了多久、接口花了多久，靠它拆开（2026-10-29）
+        sentence["submit_wall"] = time.time()
         self.q.put(sentence)
 
     def pending(self):
@@ -433,6 +447,7 @@ class Translator(threading.Thread):
                         break
             cues = [core.Cue(i + 1, s["start"], s["end"], s["ja"]) for i, s in enumerate(batch)]
             t0 = time.time()
+            request_wall = t0
             try:
                 got = client.translate(cues, "ja", "", self.glossary_getter())
             except Exception as exc:  # noqa: BLE001
@@ -451,10 +466,14 @@ class Translator(threading.Thread):
             self.stats["seconds"] += time.time() - t0
             self.stats["batches"] += 1
             self.stats["lines"] += len(batch)
+            done_wall = time.time()
             for i, s in enumerate(batch):
                 zh = got.get(i + 1)
                 if zh:
-                    self.on_result({**s, "zh": zh})
+                    # tr_start_wall = 这一批请求真正开始的时刻；tr_wall = 拿到结果的时刻。
+                    # 前者减 submit_wall 就是排队时间，两者之差是接口耗时（2026-10-29）。
+                    self.on_result({**s, "zh": zh,
+                                    "tr_start_wall": request_wall, "tr_wall": done_wall})
 
     def stop(self):
         self.stop_event.set()
@@ -480,3 +499,63 @@ def load_key(root=None):
     path = Path(root) / winsecret.SECRET_FILE
     blob = winsecret.unprotect(base64.b64decode(path.read_text("ascii")))
     return json.loads(blob).get("key")
+
+
+# ---------- 延迟拆解（2026-10-29 加） ----------
+#
+# 使用者问「为什么延迟 7 秒，是网络吗」。原来只有一个总延迟，看不出谁占大头，
+# 所以给每一句带上几个墙钟时间点，显示时拆成四段：
+#   识别 = 从这句话说完，到最后一个词被提交（含安全线 1.5s + 2 秒识别节拍 + 推理）
+#   等句 = 从最后一个词提交，到这句被交给翻译（等停顿 / 凑长度 / 最长等 maxwait）
+#   翻译 = 从交给翻译，到拿到中文（排队 + 接口耗时）
+#   显示 = 拿到中文到真的画到屏幕上（正常 <0.3s，大了说明界面线程被卡）
+#
+# 这些时间点都在各自线程里打，用同一台机器的墙钟，差值是可靠的。
+def latency_parts(payload, capture_wall, shown_wall):
+    """把一句的延迟拆成四段（秒）。缺字段的旧数据按 0 处理，不抛异常。"""
+    end_wall = capture_wall + float(payload.get("end") or 0.0)
+    commit_wall = float(payload.get("commit_wall") or end_wall)
+    flush_wall = float(payload.get("flush_wall") or commit_wall)
+    tr_wall = float(payload.get("tr_wall") or flush_wall)
+    shown = float(shown_wall)
+
+    def _clamp(value):
+        return max(0.0, value)
+
+    return {
+        "recog": _clamp(commit_wall - end_wall),
+        "assembly": _clamp(flush_wall - commit_wall),
+        "trans": _clamp(tr_wall - flush_wall),
+        "shown": _clamp(shown - tr_wall),
+        "total": _clamp(shown - end_wall),
+    }
+
+
+def parts_summary(parts):
+    """一串拆解 → 各段的中位数，给状态行 / 运行记录用。空的话返回 None。"""
+    if not parts:
+        return None
+    result = {}
+    for key in ("recog", "assembly", "trans", "shown", "total"):
+        values = sorted(part.get(key, 0.0) for part in parts)
+        result[key] = values[len(values) // 2]
+    return result
+
+
+def latency_notice_title():
+    return "为什么实时字幕会有几秒延迟"
+
+
+def latency_notice_text():
+    """开启后弹给使用者看的小提示：挑最有代表性的几条，说清「这是正常的」。"""
+    return (
+        "实时字幕天生有 4～7 秒延迟，这是正常的，不是卡死：\n\n"
+        "① 识别要等「安全线」1.5 秒，再按每 2 秒一轮提交（约 2～3 秒）\n"
+        "② 一句话要等说完或够长了才定稿（连续说话时最多再等 2.5 秒；"
+        "这次已调早：8 个字先出半句）\n"
+        "③ 翻译一次约 1.5～2 秒（走 DeepSeek 接口，取决于网络和服务器）\n"
+        "④ Wi-Fi 丢包、显卡被别的程序抢，个别句子会再多几秒\n\n"
+        "页面上的「延迟中位」旁边会显示拆解（识别+等句+翻译），哪个大一眼看得出。\n"
+        "如果要精确时间轴（比如剪视频），请用「识别任务」，不要用实时字幕。"
+    )
+

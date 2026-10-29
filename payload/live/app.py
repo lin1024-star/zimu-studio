@@ -37,7 +37,9 @@ from live import glossary as gl  # noqa: E402
 from live.capture import (AudioRing, DEFAULT_SOURCE, FileAudioSource, SystemAudioCapture,
                           list_sources, source_label)  # noqa: E402
 from live.overlay import Overlay  # noqa: E402
-from live.pipeline import DEFAULTS, LiveTranscriber, Translator  # noqa: E402
+from live.pipeline import (DEFAULTS, LiveTranscriber, Translator,  # noqa: E402
+                           latency_notice_text, latency_notice_title, latency_parts,
+                           parts_summary)
 from core import LANGUAGES  # noqa: E402
 import friendly_errors  # noqa: E402
 
@@ -155,6 +157,10 @@ class LiveApp:
         self.paused = False
         self.started_at = None
         self.latencies = []
+        self.parts = []                   # 最近几句的延迟拆解：识别 / 等句 / 翻译 / 显示
+        self._notice_scheduled = False    # 这次运行是否已经安排过「为什么有延迟」的提示
+        self._notice_done = False
+        self._notice_win = None
         self.ja_lengths = []
         self.zh_lengths = []
         self.seen_ids = set()
@@ -200,6 +206,7 @@ class LiveApp:
             "minutes": ran / 60.0,
             "sentences": len(whole),
             "median": median_latency(self.latencies),
+            "parts": parts_summary(self.parts[-20:]),
             "per_step": per_step,
             "budget": DEFAULTS["step"],
             "paused": self.paused,
@@ -358,6 +365,51 @@ class LiveApp:
         from live.pipeline import load_key
         return load_key(DATA_ROOT)
 
+    def _show_latency_notice(self):
+        """开启后弹一次「为什么实时字幕有几秒延迟」的提示（2026-10-29 加）。
+
+        为什么要弹：使用者看到 7 秒延迟会以为是软件卡了/网络坏了。把构成摊开说清楚，
+        并顺手告诉他页面上的「拆解」怎么读；勾了「以后不再提示」就写进
+        实时字幕_设置.json（slow_notice=false），下次不再弹。
+
+        自检/隐藏启动（visible=False）不弹；启动失败/弹窗异常也只记日志，不影响出字幕。
+        """
+        if self._notice_done or not self.visible:
+            self._notice_done = True
+            return
+        self._notice_done = True
+        try:
+            if read_settings().get("slow_notice", True) is False:
+                return
+            import tkinter as tk
+            from tkinter import ttk
+            root = self.overlay.root
+            win = tk.Toplevel(root)
+            self._notice_win = win
+            win.title(latency_notice_title())
+            win.transient(root)
+            win.resizable(False, False)
+            ttk.Label(win, text=latency_notice_text(), justify="left",
+                      wraplength=560).pack(padx=18, pady=(16, 8), anchor="w")
+            keep = tk.BooleanVar(value=False)
+            ttk.Checkbutton(win, text="以后不再提示", variable=keep).pack(anchor="w", padx=18)
+            def close():
+                if keep.get():
+                    write_settings(slow_notice=False)
+                win.destroy()
+            ttk.Button(win, text="知道了", command=close).pack(pady=(10, 16))
+            win.update_idletasks()
+            # 不抢焦点、不挡住悬浮字幕的按钮：置顶但不 grab
+            try:
+                win.attributes("-topmost", True)
+            except Exception:  # noqa: BLE001
+                pass
+            x = root.winfo_rootx() + 40
+            y = root.winfo_rooty() + 40
+            win.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"延迟提示没弹出来（忽略）：{type(exc).__name__}: {exc}")
+
     def shutdown(self):
         for obj in (self.transcriber, self.translator, self.capture):
             try:
@@ -371,6 +423,13 @@ class LiveApp:
         self.shutdown()
         self.capture = self.transcriber = self.translator = None
         self.started_at = None
+        win = getattr(self, "_notice_win", None)
+        if win is not None:
+            try:
+                win.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+            self._notice_win = None
         if self.overlay is not None:
             try:
                 self.overlay.root.withdraw()
@@ -384,8 +443,10 @@ class LiveApp:
             while True:
                 kind, payload = self.out.get_nowait()
                 if kind == "subtitle":
+                    shown_wall = time.time()
                     self.overlay.show_subtitle(payload)
-                    lat = time.time() - self.capture_wall - payload["end"]
+                    lat = shown_wall - self.capture_wall - payload["end"]
+                    parts = latency_parts(payload, self.capture_wall, shown_wall)
                     mark = "半句" if payload.get("partial") else "整句"
                     # 延迟只按「这一句第一次出现」算 —— 那才是观众看到内容的时间。
                     # 把后面的「整句替换」也算进去的话，中位数会被拉高，反映不了真实体验。
@@ -394,16 +455,28 @@ class LiveApp:
                         if sid is not None:
                             self.seen_ids.add(sid)
                         self.latencies.append(lat)
+                        self.parts.append(parts)
+                        self.parts = self.parts[-50:]
                     # 留一份完整结果：主界面那页要用它导出 SRT/TXT
                     # （半句和整句都留：导出时按 id 取最后一次，等于整句）
-                    self.history.append(dict(payload, latency=lat))
-                    log(f"字幕[{mark}] 延迟{lat:5.1f}s | {payload['zh']}  〔{payload['ja']}〕")
+                    self.history.append(dict(payload, latency=lat, parts=parts))
+                    log(f"字幕[{mark}] 延迟{lat:5.1f}s"
+                        f"｜拆解 识别{parts['recog']:.1f}+等句{parts['assembly']:.1f}"
+                        f"+翻译{parts['trans']:.1f}"
+                        f" | {payload['zh']}  〔{payload['ja']}〕")
                     self.ja_lengths.append(len(payload["ja"]))
                     self.zh_lengths.append(len(payload["zh"]))
                     if self.verbose:
-                        print(f"  [{mark} 延迟 {lat:5.1f}s] {payload['zh']}", flush=True)
+                        print(f"  [{mark} 延迟 {lat:5.1f}s"
+                              f"（{parts['recog']:.1f}+{parts['assembly']:.1f}"
+                              f"+{parts['trans']:.1f}）] {payload['zh']}", flush=True)
                 elif kind == "status":
                     self.overlay.set_status(payload)
+                    # 开起来、模型加载完之后弹一次「为什么有几秒延迟」（2026-10-29）。
+                    # 用 after 排队，不阻塞字幕刷新；隐藏启动（自检）不弹。
+                    if payload == "运行中" and not self._notice_scheduled:
+                        self._notice_scheduled = True
+                        self.overlay.root.after(800, self._show_latency_notice)
                 elif kind == "overlay_source":
                     self.overlay.set_source(payload)
                 elif kind == "placeholder":
@@ -419,13 +492,16 @@ class LiveApp:
         if self.started_at and not self.paused:
             recent = self.latencies[-20:]
             med = sorted(recent)[len(recent) // 2] if recent else 0
+            parts_med = parts_summary(self.parts[-20:])
+            part_txt = (f"｜拆解 识别{parts_med['recog']:.1f}+等句{parts_med['assembly']:.1f}"
+                        f"+翻译{parts_med['trans']:.1f}") if parts_med else ""
             mins = (time.time() - self.started_at) / 60
             step_txt = ""
             if self.transcriber and self.transcriber.stats["steps"]:
                 st = self.transcriber.stats
                 step_txt = (f"｜每步 {st['seconds']/st['steps']:.2f}s/{DEFAULTS['step']:.1f}s"
                             f"｜积压 {self.transcriber.backlog():.0f}s")
-            self.overlay.set_status(f"运行中 {mins:.1f} 分钟｜延迟中位 {med:.1f}s"
+            self.overlay.set_status(f"运行中 {mins:.1f} 分钟｜延迟中位 {med:.1f}s{part_txt}"
                                     f"｜已出 {len(self.latencies)} 条{step_txt}")
             if self.verbose and self.transcriber and self.transcriber.stats["steps"]:
                 st = self.transcriber.stats
@@ -456,7 +532,9 @@ class LiveApp:
                         f"｜翻译 {ts.get('batches',0)} 批/{ts.get('lines',0)} 条"
                         f" 平均 {ts.get('seconds',0)/max(1,ts.get('batches',1)):.1f}s"
                         f"｜待翻 {self.translator.pending() if self.translator else 0}"
-                        f"｜丢旧 {ts.get('dropped',0)}")
+                        f"｜丢旧 {ts.get('dropped',0)}"
+                        + (f"｜拆解 识别{parts_med['recog']:.1f}s 等句{parts_med['assembly']:.1f}s"
+                           f" 翻译{parts_med['trans']:.1f}s" if parts_med else ""))
         self.overlay.root.after(200, self._pump)
 
     def run(self):
