@@ -7,10 +7,48 @@
 如果每次都把整条缓冲重新拼接（30 秒 = 48 万个采样），录音线程会被拖慢，
 实测会出现丢帧（soundcard 报 data discontinuity）。分块是 O(1) 追加。
 """
+import sys
 import threading
 import time
 
 import numpy as np
+
+# WASAPI 是 COM 接口。随包带的 soundcard 只在**第一次 import 时**给所在线程
+# 初始化一次 COM（模块级 _com），换个线程就没有了 —— 表现为：
+#   停掉实时字幕再启动 / 换音源后新开的采集线程 → RuntimeError('Error 0x800401f0')
+# （CO_E_NOTINITIALIZED；2026-10-29 实测三次采集线程，第 1 次正常、第 2、3 次必现）
+_WIN32 = sys.platform == "win32"
+# CoInitializeEx 的返回值：0 = 这次由我们初始化，1 = 本线程早已初始化（不归我们管），
+# 其他多半是 RPC_E_CHANGED_MODE（线程已按别的套间初始化）——都不用管。
+_COINIT_MULTITHREADED = 0x0
+
+
+def _ensure_com_thread():
+    """给当前线程补一次 COM 初始化。返回 True 表示这次是我们初始化的。
+
+    调用方如果拿到 True，必须在同一个线程结束时调 _release_com_thread()，
+    否则每次起停都会在系统里多留一份没释放的 COM 引用。
+    非 Windows 平台直接返回 False（这套代码只在 Windows 上有声卡路径）。
+    """
+    if not _WIN32:
+        return False
+    try:
+        import ctypes
+        hr = ctypes.windll.ole32.CoInitializeEx(None, _COINIT_MULTITHREADED)
+    except Exception:  # noqa: BLE001
+        return False
+    return int(hr) == 0
+
+
+def _release_com_thread():
+    """和 _ensure_com_thread 配对：只在确认是自己初始化的线程里调用。"""
+    if not _WIN32:
+        return
+    try:
+        import ctypes
+        ctypes.windll.ole32.CoUninitialize()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class AudioRing:
@@ -98,6 +136,10 @@ def list_sources(sc=None):
     """
     if sc is None:
         sc = _import_soundcard()
+    # 顺序同上：先 import（第一次 import 时它自己会在本线程初始化 COM），再补。
+    # 反过来会让 soundcard 的 import 拿到 S_FALSE，被它当成错误抛 "Error 0x1" ✗
+    # （2026-10-29 实测踩到）。主界面线程不配对释放没关系：它活到进程结束。
+    _ensure_com_thread()
     items = [{"id": DEFAULT_SOURCE, "label": "系统声音（默认扬声器）", "kind": "loopback"}]
     seen = set()
     for sp in _safe(sc.all_speakers, []):
@@ -186,8 +228,14 @@ class SystemAudioCapture(threading.Thread):
 
     def run(self):
         import warnings
+        com_owned = False
         try:
-            lb = self._pick()
+            # 顺序很重要：先 import soundcard（第一次 import 时它会在本线程初始化 COM），
+            # 之后才补 _ensure_com_thread —— 反过来的话 soundcard 自己那次初始化会拿到
+            # S_FALSE，被它的 check_error 当成错误抛 "Error 0x1"，连导入都失败。
+            sc = self._sc()
+            com_owned = _ensure_com_thread()
+            lb = open_source(sc, self.source_id)
             self.device = lb.name
             n = max(1, int(self.rate * self.block))
             # 麦克风是单声道/多声道输入，回环也可能不止一路；统一取第一路。
@@ -204,6 +252,9 @@ class SystemAudioCapture(threading.Thread):
                         self.blocks += 1
         except Exception as exc:  # noqa: BLE001
             self.error = exc
+        finally:
+            if com_owned:
+                _release_com_thread()
 
     def stop(self):
         self.stop_event.set()

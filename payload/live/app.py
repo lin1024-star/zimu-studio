@@ -161,6 +161,7 @@ class LiveApp:
         self._notice_scheduled = False    # 这次运行是否已经安排过「为什么有延迟」的提示
         self._notice_done = False
         self._notice_win = None
+        self._capture_error_reported = False   # 抓声音中途断掉只报一次（2026-10-29）
         self.ja_lengths = []
         self.zh_lengths = []
         self.seen_ids = set()
@@ -207,6 +208,7 @@ class LiveApp:
             "sentences": len(whole),
             "median": median_latency(self.latencies),
             "parts": parts_summary(self.parts[-20:]),
+            "capture_error": bool(getattr(self.capture, "error", None)),
             "per_step": per_step,
             "budget": DEFAULTS["step"],
             "paused": self.paused,
@@ -248,6 +250,7 @@ class LiveApp:
         label = source_label(source_id)
         log(f"音频来源已切换：{old} → {label}（音频时钟 {ring_now:.1f}s 处）")
         self.out.put(("status", f"已切换到：{label}"))
+        self._capture_error_reported = False   # 新采集线程重新开始，允许再报一次中断
 
     # ---------- 术语表 ----------
     def _read_settings_glossary(self):
@@ -303,6 +306,7 @@ class LiveApp:
         # 延迟必须从「音频开始流进来」那一刻算，不能从「模型加载完」算：
         # 加载模型要好几秒，这几秒音频已经在走了，用 started_at 算会凭空差出一个加载时间。
         self.capture_wall = time.time()
+        self._capture_error_reported = False
 
         self.translator = Translator(
             self._key(), FLASH_MODEL, self.current_glossary,
@@ -489,6 +493,24 @@ class LiveApp:
                     self.overlay.set_status(payload)
         except queue.Empty:
             pass
+        # 抓声音线程中途死掉（WASAPI / COM 异常）时，不能让界面继续显示「运行中」、
+        # 还拿冻结的音频产出垃圾字幕 —— 报一次、停掉识别线程，等使用者停止后重新启动。
+        # 2026-10-29：真实踩到的表现正是「抓声音失败 Error 0x800401f0」但只在启动时检查过，
+        # 中途 / 换音源失败没人管，于是界面静默产出重复的乱句。
+        cap = getattr(self, "capture", None)
+        if (cap is not None and getattr(cap, "error", None) is not None
+                and not self._capture_error_reported):
+            self._capture_error_reported = True
+            error = cap.error
+            log(f"抓声音中断：{type(error).__name__}: {error}")
+            text = ("抓声音中断了：" + friendly_errors.hint(error) +
+                    "\n请点「停止」，再点「启动实时字幕」重新开始。")
+            self.out.put(("fatal", text))
+            try:
+                if self.transcriber is not None:
+                    self.transcriber.stop_event.set()
+            except Exception:  # noqa: BLE001
+                pass
         if self.started_at and not self.paused:
             recent = self.latencies[-20:]
             med = sorted(recent)[len(recent) // 2] if recent else 0

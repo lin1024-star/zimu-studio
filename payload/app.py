@@ -921,7 +921,9 @@ class Application(tk.Tk):
                         text=f"最近一条：{last.get('zh') or ''}　〔{last.get('ja') or ''}〕")
                 n = len(live.result_rows())
                 self.live_count.configure(text=f"已攒下 {n} 句（可导出）" if n else "还没有内容")
-                if live.started_at:
+                if st.get("capture_error"):
+                    self.live_state.configure(text="状态：抓声音中断（请停止后重新启动）")
+                elif live.started_at:
                     self.live_state.configure(
                         text="状态：运行中" + ("（已暂停）" if st["paused"] else ""))
             if live is None or not getattr(live, "started_at", None):
