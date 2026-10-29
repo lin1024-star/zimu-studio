@@ -825,12 +825,19 @@ class Application(tk.Tk):
         self.live_export_txt = ttk.Button(box, text="导出 TXT…",
                                           command=lambda: self.export_live("txt"), state="disabled")
         self.live_export_txt.pack(side="left", padx=8)
+        # 2026-10-29：单独打开的实时字幕（桌面图标）结果只在那个进程里，主界面按
+        # 「运行记录」只读地把它导出来 —— 不用再启动第二份，也不动正在跑的那一份 ✓
+        self.live_export_log = ttk.Button(box, text="从运行记录导出…",
+                                          command=self.export_live_log)
+        self.live_export_log.pack(side="left", padx=8)
         self.live_count = ttk.Label(box, text="还没有内容", style="Muted.TLabel")
         self.live_count.pack(side="left", padx=10)
 
         ttk.Label(page, text="用法：先让电脑放出声音（视频、直播、游戏都行），再点「启动实时字幕」。\n"
                              "悬浮字幕窗上可以：暂停、换音源、调外观（透明度/字号/宽度）、当场加术语。\n"
-                             "术语表用的就是「翻译与识别设置」页那一份（点过「保存设置」就生效）。",
+                             "术语表用的就是「翻译与识别设置」页那一份（点过「保存设置」就生效）。\n"
+                             "如果实时字幕是从桌面图标单独开的：不用在这个窗口再启动一份，\n"
+                             "点「从运行记录导出…」就能把那一场导出来（只读记录，不影响正在跑的那一份）。",
                   style="Muted.TLabel", justify="left").pack(anchor="w", pady=(6, 0))
         self.refresh_live()           # 每秒刷一次这一页（没启动时也刷，句数会跟着变 ✓）
 
@@ -903,6 +910,9 @@ class Application(tk.Tk):
                 if live.started_at:
                     self.live_state.configure(
                         text="状态：运行中" + ("（已暂停）" if st["paused"] else ""))
+            if live is None or not getattr(live, "started_at", None):
+                hint = self._external_live_hint()
+                self.live_state.configure(text=hint or "状态：未运行")
         except Exception as exc:          # noqa: BLE001
             self.safe_log(f"刷新实时字幕状态出错（已忽略）：{type(exc).__name__}")
         self.after(1000, self.refresh_live)
@@ -958,6 +968,84 @@ class Application(tk.Tk):
             return
         self.log(f"实时字幕已导出 {len(cues)} 句 → {path}")
         messagebox.showinfo("导出好了", f"导出 {len(cues)} 句：\n{path}")
+
+    def live_log_path(self):
+        """实时字幕的运行记录（独立运行时也写这一份，主界面只读它）。"""
+        return USER_DIR / "实时字幕_运行记录.txt"
+
+    def _external_live_hint(self):
+        """另一份实时字幕是不是正在写记录？是就给一句提示；只读文件时间，不碰它。"""
+        try:
+            age = time.time() - self.live_log_path().stat().st_mtime
+        except OSError:
+            return ""
+        if age > 20:
+            return ""
+        return ("状态：检测到另一份实时字幕正在运行 —— 这里不用再启动，"
+                "可直接点「从运行记录导出…」")
+
+    def export_live_log(self):
+        """把「单独打开的那份实时字幕」这一场导出来。
+
+        2026-10-29 使用者反馈：先单独开了实时字幕（桌面图标），再开字幕工坊 ——
+        字幕工坊里看不到那一场，也就导不出来。原因：那一场的结果只在**那个进程的
+        内存**里；两边唯一共用的痕迹是运行记录。所以这里只读记录文件：
+        不启动第二份、不停止也不干扰正在跑的那一份 ✓
+
+        时间轴是估算的（记录里没有每条的开始/结束时间）：见 live/logimport.py 的说明。
+        """
+        live = getattr(self, "live", None)
+        if live is not None and getattr(live, "started_at", None):
+            messagebox.showinfo(
+                "这一份正在当前窗口里跑",
+                "当前这一份实时字幕就是从这个窗口启动的，直接用上面的"
+                "「导出 SRT / 导出 TXT」即可。\n"
+                "「从运行记录导出…」是给「从桌面图标单独打开的实时字幕」用的。")
+            return
+        from live import logimport
+        path = self.live_log_path()
+        if not path.is_file():
+            messagebox.showinfo(
+                "没找到运行记录",
+                f"没有找到实时字幕的运行记录：\n{path}\n\n"
+                "如果实时字幕刚打开，等它显示出第一条字幕，记录里才会写出来，再点一次。")
+            return
+        result = logimport.read_session(path)
+        cues = result["cues"]
+        if not cues:
+            messagebox.showinfo(
+                "这一场还没有完整句子",
+                "运行记录里还没找到「整句」—— 刚启动时只有半句。\n"
+                "等它出几条完整字幕，再点一次。")
+            return
+        default = time.strftime("实时字幕记录_%Y%m%d_%H%M") + ".srt"
+        path_out = filedialog.asksaveasfilename(
+            title="从运行记录导出这一场实时字幕",
+            defaultextension=".srt", initialfile=default,
+            filetypes=[("SRT 字幕", "*.srt"), ("文本文件", "*.txt")])
+        if not path_out:
+            return
+        kind = "txt" if path_out.lower().endswith(".txt") else "srt"
+        rows = [Cue(id=index, start=c["start"], end=c["end"], source=c["ja"], zh=c["zh"])
+                for index, c in enumerate(cues, 1)]
+        try:
+            if kind == "srt":
+                body = core.format_srt(rows, translated=True, language="ja", bilingual=True)
+            else:
+                body = "\n".join(line for c in rows for line in (c.source, c.zh, ""))
+            with open(path_out, "w", encoding="utf-8", newline="") as handle:
+                handle.write(body)
+        except Exception as exc:          # noqa: BLE001
+            self.log(f"从运行记录导出失败：{type(exc).__name__}: {exc}")
+            messagebox.showerror("导出失败", friendly_errors.brief(exc))
+            return
+        since = f"（记录从 {result['started']} 开始）" if result["started"] else ""
+        self.log(f"从运行记录导出 {len(rows)} 句 → {path_out}")
+        messagebox.showinfo(
+            "导出好了",
+            f"从运行记录导出 {len(rows)} 句{since}：\n{path_out}\n\n"
+            "说明：记录里没有每条的开始/结束时间，时间轴是按「显示时刻 − 延迟」估算的，\n"
+            "拿去整理/参考够用；要精确时间轴请在字幕工坊里自己跑识别。")
 
     def toggle_more(self):
         """「更多操作」展开 / 收起 —— 不常用的东西默认不占地方。
