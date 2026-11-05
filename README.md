@@ -2,8 +2,8 @@
 
 把听不懂的视频，变成可以校对的中文字幕——双击就能用。
 
-> 当前提供 **2.5.3 预发布版，尚未正式发布**：[下载 2.5.3 预发布包](https://github.com/lin1024-star/zimu-studio/releases/tag/v2.5.3-rc.1)。
-> 已完成隔离安装升级、短素材 CPU/GPU 识别、真实翻译和声音回环验收；范围与未覆盖项见 `VALIDATION.txt`。
+> 当前稳定版 **2.6**：[下载 2.6 正式版](https://github.com/lin1024-star/zimu-studio/releases/tag/v2.6)。
+> 2.6 是功能版：实时字幕能识别并导出单独开着的那一场、延迟拆解、半句更早出；并带上 2.5.3 预发布里的修复和「抓声音中断（0x800401f0）」修复。范围与未覆盖项见 `VALIDATION.txt`。
 
 作者：[lin1024-star](https://github.com/lin1024-star)（心非）· 免费公开使用，不收费、不出售
 
